@@ -71,6 +71,36 @@ function bootstrapData() {
 }
 bootstrapData();
 
+// --- ensureAdminUser: гарантия наличия admin (role: 'admin') ---
+function ensureAdminUser() {
+  try {
+    var users = readJsonSync(FILES.users, []);
+    if (!Array.isArray(users)) users = [];
+    var pwd = process.env.ADMIN_PASSWORD || 'admin123'; // можно переопределить в ENV
+    var changed = false;
+    var found = false;
+    for (var i = 0; i < users.length; i++) {
+      var u = users[i] || {};
+      var name = (u.nick || u.login || u.username || u.id || u.name || '').toString();
+      if (name === 'admin') {
+        found = true;
+        if (u.role !== 'admin') { u.role = 'admin'; changed = true; }
+        if (!u.password) { u.password = pwd; changed = true; }
+        users[i] = u;
+        break;
+      }
+    }
+    if (!found) {
+      users.push({ nick: 'admin', password: pwd, role: 'admin', createdAt: Date.now() });
+      changed = true;
+    }
+    if (changed) writeJsonAtomicSync(FILES.users, users);
+  } catch (e) {
+    console.error('ensureAdminUser failed:', e);
+  }
+}
+
+
 // ---- Routes ----
 app.get('/api/catalog', (_req,res) => {
   try { res.json({ cats: readJsonSync(FILES.cats, []), products: readJsonSync(FILES.products, []) }); }
