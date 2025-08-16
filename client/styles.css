@@ -1,0 +1,702 @@
+:root{
+  --bg:#ffffff;
+  --ink:#0b1220;
+  --muted:#5b6b85;
+  --line:#e6e8ee;
+
+  --brand:#1f6bff;
+  --brand-ink:#fff;
+  --accent:#ffb100;
+  --good:#0ea55b;
+  --bad:#ef4444;
+
+  /* Панели и мягкие фоны */
+  --panel:#ffffff;      /* карточки, шапка, модалки */
+  --soft:#f7f9ff;       /* кнопки, табы, категории */
+  --soft-active:#eef4ff;
+  --imgbg:#f5f7fb;      /* фон квадрата с картинкой */
+  --hint:#fafbff;
+
+  --badgeDotBg:#111827;
+  --badgeDotInk:#ffffff;
+}
+
+/* ТЁМНАЯ ТЕМА: только переменные */
+.theme-dark{
+  --bg:#0b1220;
+  --ink:#e8ecf7;
+  --muted:#9aa6bf;
+  --line:#1e2942;
+
+  --brand:#5aa0ff;
+  --brand-ink:#ffffff;
+  --accent:#ffc866;
+  --good:#22c072;
+  --bad:#ff6b6b;
+
+  --panel:#0f1628;
+  --soft:#121a2e;
+  --soft-active:#172339;
+  --imgbg:#0d1424;
+  --hint:#101a2b;
+
+  --badgeDotBg:#e8ecf7;
+  --badgeDotInk:#0b1220;
+}
+
+/* плавный переход темы */
+html, body, .card, .modal-card, .site-header, .site-footer {
+  transition: background-color .25s ease, color .25s ease, border-color .25s ease;
+}
+
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0; background:var(--bg); color:var(--ink);
+  font:16px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Inter,Arial,sans-serif;
+}
+
+/* Animations */
+@keyframes pop{from{transform:scale(.98);opacity:0} to{transform:scale(1);opacity:1}}
+@keyframes bump{0%{transform:scale(1)}30%{transform:scale(1.25)}100%{transform:scale(1)}}
+@keyframes fadeUp{from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)}}
+
+/* Header */
+.site-header{
+  display:flex; align-items:center; gap:16px;
+  padding:12px 16px; border-bottom:1px solid var(--line);
+  position:sticky; top:0; background:var(--panel); z-index:20;
+}
+.logo{font-weight:900; letter-spacing:.3px; text-decoration:none; color:inherit}
+.logo:hover{opacity:.9}
+.search{flex:1; display:flex; gap:8px; max-width:720px}
+.search input{flex:1; padding:12px 14px; border:1px solid var(--line); border-radius:10px}
+.btn{
+  border:1px solid var(--line); background:var(--soft); color:var(--ink);
+  padding:10px 12px; border-radius:10px; cursor:pointer; font-weight:700;
+  transition:transform .12s ease, background .2s ease, box-shadow .2s ease;
+}
+.btn:hover{transform:translateY(-1px)}
+.btn:active{transform:translateY(0) scale(.98)}
+.btn-ghost{background:var(--panel)}
+.btn.primary{background:var(--brand); color:var(--brand-ink); border-color:var(--brand)}
+.small{font-size:12px; color:var(--muted)}
+.badge{position:relative}
+.badge-dot{margin-left:6px; background:var(--badgeDotBg); color:var(--badgeDotInk); border-radius:10px; padding:1px 7px; font-size:12px; display:inline-block}
+.badge-dot.bump{animation:bump .45s}
+
+/* Layout */
+.layout{display:grid; grid-template-columns: 260px 1fr}
+.sidebar{padding:16px; border-right:1px solid var(--line); min-height:calc(100vh - 58px)}
+.sidebar h3{margin:6px 0 10px 0}
+.cats{list-style:none; margin:0; padding:0; display:grid; gap:6px}
+.cats .cat-btn{
+  display:flex; gap:8px; align-items:center; padding:10px 12px;
+  background:var(--soft); border:1px solid var(--line); border-radius:10px; cursor:pointer;
+  transition:transform .12s ease, box-shadow .2s ease;
+}
+.cats .cat-btn:hover{transform:translateY(-1px)}
+/* было outline (квадрат) — заменили на box-shadow с тем же радиусом */
+.cats .cat-btn.active{
+  background:var(--soft-active);
+  border-color:#bdd0ff;
+  box-shadow:0 0 0 2px #bdd0ff;
+  outline:none;
+}
+.hint{margin-top:12px; padding:10px; border:1px dashed var(--line); border-radius:10px; color:var(--muted); background:var(--hint)}
+
+.catalog{padding:16px 20px}
+.toolbar{display:flex; gap:12px; align-items:center; margin-bottom:12px}
+.filters select{padding:8px 10px; border:1px solid var(--line); border-radius:8px}
+.spacer{flex:1}
+.welcome{color:var(--muted)}
+
+/* Grid 4 columns */
+.grid{display:grid; gap:16px; grid-template-columns: repeat(4, minmax(0,1fr))}
+@media (max-width:1200px){ .grid{grid-template-columns: repeat(3, minmax(0,1fr))} }
+@media (max-width:900px){ .grid{grid-template-columns: repeat(2, minmax(0,1fr))} }
+@media (max-width:620px){ .grid{grid-template-columns: 1fr} }
+
+/* Card */
+.card{
+  display:flex; flex-direction:column; border:1px solid var(--line); border-radius:14px; overflow:hidden; background:var(--panel);
+  transition:transform .15s ease, box-shadow .15s ease;
+  animation:fadeUp .25s ease both;
+}
+.card:hover{transform:translateY(-2px); box-shadow:0 6px 18px rgba(0,0,0,.08)}
+.card .img{aspect-ratio:1/1; display:grid; place-items:center; background:var(--imgbg); overflow:hidden}
+.card .img img,
+.card .img svg{ width:100%; height:100%; max-width:100%; max-height:100%; object-fit:contain; display:block }
+.card .body{padding:12px; display:grid; gap:8px}
+.card h3{margin:0}
+.price{font-weight:900}
+.opts{display:flex; gap:8px; flex-wrap:wrap}
+.opts select, .opts input[type="number"]{padding:8px 8px; border:1px solid var(--line); border-radius:8px}
+.card .actions{display:flex; gap:8px; margin-top:auto}
+.card .actions .btn{flex:1}
+
+/* Footer */
+.site-footer{margin-top:20px; padding:16px; border-top:1px solid var(--line); display:flex; gap:10px; justify-content:space-between; color:var(--muted)}
+
+/* Modals (dialog) */
+.modal{border:none; padding:0}
+.modal::backdrop{background:rgba(0,0,0,.25)}
+.modal-card{
+  width:min(560px,96vw); background:var(--panel); border:1px solid var(--line); border-radius:14px; overflow:hidden;
+  animation:pop .16s ease;
+}
+.modal-card.wide{width:min(920px,96vw)}
+.modal-head{display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 12px; border-bottom:1px solid var(--line)}
+.modal-body{padding:12px; display:grid; gap:10px}
+label{display:grid; gap:6px}
+input, select{padding:10px 12px; border:1px solid var(--line); border-radius:10px}
+.icon-btn{border:none; background:transparent; font-size:18px; cursor:pointer}
+
+/* Modals (dialog) — ДОБАВКА для баннера */
+.modal-card{ position:relative; }  /* чтобы баннер позиционировался от карточки */
+
+.modal-alert{
+  position:absolute;
+  left:50%;
+  transform:translateX(-50%);
+  top:-24px;                       /* выступает вверх на ~24px */
+  background:var(--panel);
+  color:var(--ink);
+  border:1px solid var(--line);
+  border-left:4px solid var(--bad);/* по умолчанию — ошибка */
+  border-radius:12px;
+  padding:10px 12px;
+  box-shadow:0 10px 26px rgba(0,0,0,.12);
+  z-index:50;
+  animation:malert-in .18s ease both;
+}
+.modal-alert.success{ border-left-color:var(--good); }
+.modal-alert.warn{    border-left-color:var(--accent); }
+
+.modal-alert .malert-x{
+  margin-left:12px; border:none; background:transparent; cursor:pointer;
+  font-size:16px; opacity:.65;
+}
+.modal-alert .malert-x:hover{ opacity:1; }
+
+@keyframes malert-in{ from{opacity:0; transform:translate(-50%,-6px)} to{opacity:1; transform:translate(-50%,0)} }
+.modal-alert.out{ animation:malert-out .16s ease both }
+@keyframes malert-out{ to{opacity:0; transform:translate(-50%,-6px)} }
+
+
+/* Tabs — фикс скруглений */
+.tabs{display:flex; gap:4px}
+.tabs .tab{
+  -webkit-appearance:none;
+  appearance:none;
+  border:1px solid var(--line);
+  background:var(--soft);
+  padding:8px 12px;
+  border-radius:12px;
+  cursor:pointer;
+  transition:background .2s ease, box-shadow .2s ease;
+}
+.tabs .tab.active{
+  background:var(--soft-active);
+  border-color:#bdd0ff;
+  box-shadow:0 0 0 2px #bdd0ff; /* вместо outline — круглый обвод */
+}
+.tabs .tab:focus{outline:none}
+.tabs .tab:focus-visible{box-shadow:0 0 0 3px rgba(31,107,255,.35)}
+.tab-pane{display:none}
+.tab-pane.active{display:grid}
+
+.check{display:flex; align-items:center; gap:8px}
+.warn{padding:10px; border:1px solid #ffd7a0; background:#fff7e6; border-radius:10px}
+
+/* Cart */
+.modal-body.split{display:grid; grid-template-columns: 1fr 320px; gap:16px}
+.cart-list{list-style:none; margin:0; padding:0; display:grid; gap:10px}
+.cart-item{display:grid; grid-template-columns: 64px 1fr auto auto auto; gap:10px; align-items:center}
+.cart-item img, .cart-item .ph{width:64px; height:64px; object-fit:cover; background:var(--imgbg); border:1px solid var(--line); border-radius:8px}
+.cart-item .title{font-weight:700}
+.cart-item .muted{color:var(--muted); font-size:12px}
+.cart-item .qty{display:flex; gap:6px; align-items:center}
+.qty input{width:64px; text-align:center}
+.cart-item .remove{border:none; background:transparent; color:#b51d1d; cursor:pointer}
+
+.cart-empty{display:none; text-align:center; color:var(--muted)}
+.cart-summary{border:1px solid var(--line); border-radius:12px; padding:12px; background:var(--panel); height:fit-content}
+.sum-row, .sum-total{display:flex; justify-content:space-between; margin:6px 0}
+.sum-total{font-size:18px; font-weight:900}
+
+/* Admin */
+.view{padding:16px 20px}
+.admin-head{display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--line); padding-bottom:10px; margin-bottom:14px}
+.admin-toolbar{margin-bottom:10px}
+.orders{width:100%; border-collapse:collapse}
+.orders th, .orders td{border-bottom:1px solid var(--line); padding:8px; vertical-align:top}
+.orders .items{font-size:12px; color:var(--muted)}
+.badge-status{padding:2px 8px; border-radius:10px; border:1px solid var(--line)}
+.badge-pending{background:#fff7e6; border-color:#ffd7a0}
+.badge-paid{background:#eafff3; border-color:#b0f0cc}
+.badge-done{background:#f0f5ff; border-color:#cfe0ff}
+.badge-canceled{background:#ffecec; border-color:#ffcaca}
+
+/* Admin tabs & forms */
+.admin-tabs{display:flex; gap:6px; margin:12px 0}
+.adm-tab{ border:1px solid var(--line); background:var(--soft); padding:8px 12px; border-radius:10px; cursor:pointer }
+.adm-tab.active{ background:var(--soft-active); box-shadow:0 0 0 2px #bdd0ff }
+
+.admin-pane{display:none}
+.admin-pane.active{display:block}
+
+.admin-grid{display:grid; grid-template-columns: 360px 1fr; gap:16px}
+@media (max-width:980px){ .admin-grid{grid-template-columns: 1fr} }
+
+.card.form{display:grid; gap:10px; padding:12px}
+.card.form h3{margin:0}
+.card h3{margin:12px 12px 8px 12px}
+.card.form textarea{padding:10px 12px; border:1px solid var(--line); border-radius:10px}
+
+/* Admin Catalog: слева таблица, справа форма */
+#catalogGrid{ grid-template-columns: 1fr 360px; }
+@media (max-width:980px){ #catalogGrid{ grid-template-columns: 1fr } }
+#prodTableCard{ grid-column: 1; }
+#prodForm.card.form{ grid-column: 2; }
+
+/* Inline-редактор на карточке */
+.btn.xs{ padding:6px 8px; font-size:12px; border-radius:8px }
+.adm-tools{ display:flex; justify-content:flex-end; margin-top:4px }
+.adm-edit{ margin-top:8px; padding:10px; border:1px solid var(--line); background:var(--soft); border-radius:10px }
+
+/* Toasts */
+.toast-wrap{ position:fixed; right:16px; bottom:16px; display:grid; gap:8px; z-index:9999 }
+.toast{
+  background:var(--panel); border:1px solid var(--line); border-left:4px solid var(--brand);
+  box-shadow:0 10px 26px rgba(0,0,0,.12); border-radius:12px;
+  padding:10px 12px; display:flex; gap:10px; align-items:flex-start;
+  max-width:min(420px,92vw); animation:toast-in .18s ease both;
+}
+.toast.success{ border-left-color:var(--good) }
+.toast.warn{    border-left-color:var(--accent) }
+.toast.error{   border-left-color:var(--bad) }
+.toast .t-msg{ line-height:1.35 }
+.toast .t-close{ margin-left:auto; border:none; background:transparent; cursor:pointer; font-size:16px; opacity:.6 }
+.toast .t-close:hover{ opacity:1 }
+@keyframes toast-in{ from{transform:translateY(6px);opacity:0} to{transform:translateY(0);opacity:1} }
+.toast.out{ animation:toast-out .16s ease both }
+@keyframes toast-out{ to{transform:translateY(6px);opacity:0} }
+
+/* Extra */
+.row{display:flex; gap:10px}
+.invoice{display:grid; gap:6px}
+.full{width:100%}
+.help{color:var(--muted)}
+/* Крестик удаления в "Мои заказы" */
+.ord-x{ border:none; background:transparent; cursor:pointer; font-size:16px; opacity:.6 }
+.ord-x:hover{ opacity:1 }
+
+/* === Fix: светлый текст в тёмной теме на кнопках, табах и селектах === */
+
+/* Категории слева (button) */
+.cats .cat-btn{ color: var(--ink); }
+
+/* Табы (в авторизации и админке) */
+.tabs .tab,
+.admin-tabs .adm-tab{ color: var(--ink); }
+
+/* Поля ввода и списки — чтобы текст был светлый и фон не белый */
+input, select, textarea{
+  color: var(--ink);
+  background: var(--panel);
+}
+input::placeholder, textarea::placeholder{ color: var(--muted); }
+
+/* Пункты выпадающих списков */
+select option{ color: var(--ink); background: var(--panel); }
+
+/* Значок-кнопка (крестики и т.п.) */
+.icon-btn{ color: var(--ink); }
+
+/* ==== Dark text fix: делаем светлый текст во всех важный местах ==== */
+.theme-dark body,
+.theme-dark .site-header,
+.theme-dark .sidebar,
+.theme-dark .catalog,
+.theme-dark .card,
+.theme-dark .modal-card,
+.theme-dark .modal-head,
+.theme-dark .modal-body,
+.theme-dark .cart-summary,
+.theme-dark .cart-item,
+.theme-dark .orders th,
+.theme-dark .orders td,
+.theme-dark .btn,
+.theme-dark .tabs .tab,
+.theme-dark .admin-tabs .adm-tab,
+.theme-dark label,
+.theme-dark .logo,
+.theme-dark h1, .theme-dark h2, .theme-dark h3, .theme-dark h4,
+.theme-dark strong, .theme-dark b,
+.theme-dark .title {
+  color: var(--ink) !important;
+}
+
+/* исключение — «приглушённый» текст остаётся серым */
+.theme-dark .muted { color: var(--muted) !important; }
+
+/* поля и выпадающие списки */
+.theme-dark input,
+.theme-dark select,
+.theme-dark textarea {
+  color: var(--ink) !important;
+  background: var(--panel) !important;
+  border-color: var(--line) !important;
+}
+.theme-dark input::placeholder,
+.theme-dark textarea::placeholder { color: var(--muted) !important; }
+.theme-dark select option { color: var(--ink); background: var(--panel); }
+
+/* кнопки */
+.theme-dark .btn { color: var(--ink) !important; }
+.theme-dark .btn.primary { color: var(--brand-ink) !important; }
+
+/* категории/табы (чтобы точно не были тёмными) */
+.theme-dark .cats .cat-btn,
+.theme-dark .tabs .tab,
+.theme-dark .admin-tabs .adm-tab { color: var(--ink) !important; }
+
+/* икон-кнопки (крестики и т.п.) */
+.theme-dark .icon-btn { color: var(--ink) !important; }
+
+
+/* Плавающая плашка ошибки над модалкой */
+.modal-float-alert{
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 99999;
+
+  background: var(--panel);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--accent);
+  border-radius: 12px;
+  padding: 10px 14px;
+
+  display: flex; align-items: center; gap: 8px;
+  box-shadow: 0 10px 26px rgba(0,0,0,.14);
+  animation: mfa-in .18s ease both;
+}
+.modal-float-alert.error  { border-left-color: var(--bad); }
+.modal-float-alert.warn   { border-left-color: var(--accent); }
+.modal-float-alert.success{ border-left-color: var(--good); }
+
+.modal-float-alert .mfa-x{
+  margin-left:auto; border:none; background:transparent;
+  cursor:pointer; font-size:16px; opacity:.75;
+}
+.modal-float-alert .mfa-x:hover{ opacity:1 }
+
+@keyframes mfa-in   { from{ transform: translate(-50%, -6px); opacity:0 } to{ transform: translate(-50%, 0); opacity:1 } }
+.modal-float-alert.out{ animation: mfa-out .16s ease both }
+@keyframes mfa-out  { to{ transform: translate(-50%, -6px); opacity:0 } }
+
+/* Белая «карточка» ошибки над модалкой — как окно регистрации */
+.modal-float-alert{
+  /* белая панель в любой теме */
+  background:#fff !important;
+  color:#0b1220 !important;
+  border:1px solid #e6e8ee !important;
+  border-left:4px solid var(--bad) !important;
+
+  border-radius:14px !important;
+  box-shadow:
+    0 12px 36px rgba(0,0,0,.18),
+    0 2px  8px rgba(0,0,0,.06) !important;
+}
+
+/* В тёмной теме — тоже белая */
+.theme-dark .modal-float-alert{
+  background:#fff !important;
+  color:#0b1220 !important;
+  border-color:#e6e8ee !important;
+}
+
+/* Крестик */
+.modal-float-alert .mfa-x{
+  color:#0b1220; opacity:.45;
+}
+.modal-float-alert .mfa-x:hover{ opacity:.9 }
+
+/* === Плашка ошибки над окном логина/регистрации (без правки JS) === */
+
+/* Разрешаем плашке вылезать наружу именно у окна авторизации */
+#authModal .modal-card{ overflow: visible !important; }
+
+/* Делаем плашку белой и поднимаем её на 25px над карточкой */
+.modal-alert{
+  position: absolute !important;
+  left: 50% !important;
+  transform: translateX(-50%) !important;
+  top: -25px !important;
+
+  background: #fff !important;
+  color: #0b1220 !important;
+  border: 1px solid #e6e8ee !important;
+  border-left: 4px solid var(--bad) !important;
+  border-radius: 14px !important;
+  padding: 10px 14px !important;
+  box-shadow: 0 12px 36px rgba(0,0,0,.18), 0 2px 8px rgba(0,0,0,.06) !important;
+  z-index: 50 !important;
+}
+
+.theme-dark .modal-alert{
+  background: #fff !important;
+  color: #0b1220 !important;
+}
+
+/* Крестик у плашки */
+.modal-alert .malert-x{
+  color:#0b1220 !important;
+  opacity:.45 !important;
+}
+.modal-alert .malert-x:hover{ opacity:.9 !important; }
+
+.logo{
+  display:flex; align-items:center;
+  text-decoration:none; /* на всякий */
+}
+
+/* размеры логотипа */
+.logo img{
+  height: 28px;            /* можно 30–32 по вкусу */
+  width: auto; 
+  display:block;
+}
+
+/* чуть крупнее на широких экранах */
+@media (min-width: 520px){
+  .logo img{ height: 32px; }
+}
+
+.logo-img{ height:28px; width:auto; display:block }
+
+.logo { display:flex; align-items:center; gap:8px; font-weight:900; text-decoration:none; color:inherit; }
+.logo-img { width:45px; height:45px; display:block; object-fit:contain; border-radius:6px; }
+
+/* ===== Product fullscreen modal ===== */
+.product-body{
+  display:grid;
+  grid-template-columns: 1fr 1fr;
+  gap:16px;
+}
+.p-left{ display:grid; place-items:center; }
+.p-img{
+  width:100%; aspect-ratio:1/1; display:grid; place-items:center;
+  background:var(--imgbg); border:1px solid var(--line); border-radius:14px; overflow:hidden;
+}
+.p-img img, .p-img svg{ width:100%; height:100%; object-fit:contain; }
+
+.p-right{ display:grid; gap:12px; align-content:start; }
+.p-title{ font-weight:900; }
+.p-price{ font-size:22px; font-weight:900; }
+
+.opt-row{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.opt-label{ width:84px; color:var(--muted); }
+.qty-ctrl{ display:flex; align-items:center; gap:8px; }
+.qty-ctrl input{ width:80px; text-align:center }
+
+/* Chips (выбор по одному) */
+.chip-group{ display:flex; gap:8px; flex-wrap:wrap; }
+.chip{
+  border:1px solid var(--line); background:var(--panel);
+  padding:8px 12px; border-radius:12px; cursor:pointer; font-weight:700;
+  transition:transform .12s ease, box-shadow .12s ease, background .12s ease;
+}
+.chip:hover{ transform:translateY(-1px) }
+.chip.active{
+  border-color:#bdd0ff; background:var(--soft-active);
+  box-shadow:0 0 0 2px #bdd0ff;
+}
+
+/* Кнопки снизу */
+.p-actions{ display:flex; gap:10px; }
+
+/* Анимация появления карточки товара */
+.product-card{ animation: product-in .22s ease both; }
+@keyframes product-in{ from{opacity:0; transform:translateY(8px) scale(.98)} to{opacity:1; transform:none} }
+
+/* Адаптив */
+@media (max-width:900px){
+  .product-body{ grid-template-columns: 1fr; }
+}
+
+#pContinue { display: none !important; }
+
+/* ===== Мобилка: фикс общей раскладки ===== */
+
+/* Диалог не должен выходить за экран, внутри — скролл */
+.modal-card{
+  max-height: calc(100vh - 24px);
+  overflow: auto;
+}
+
+/* Шапка: на узких экранах переносим поиск ниже логотипа */
+@media (max-width: 720px){
+  .site-header{ flex-wrap: wrap; gap: 8px; }
+  .search{ flex-basis: 100%; }
+}
+
+/* Основная сетка: сайдбар сверху, затем контент */
+@media (max-width: 900px){
+  .layout{ grid-template-columns: 1fr; }
+  .sidebar{
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+    min-height: auto;
+  }
+}
+
+/* Категории на телефоне — в одну строку с прокруткой (чипы) */
+@media (max-width: 900px){
+  .cats{
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    padding-bottom: 6px;
+  }
+  .cats li{ min-width: max-content; }
+}
+
+/* Сетка товаров уже адаптивна, но чуть увеличим «плитку» на узких */
+@media (max-width: 620px){
+  .card .body{ gap: 10px; }
+  .opts{ gap: 6px; }
+}
+
+/* ===== Модалка товара (показ на весь экран) — мобильная версия ===== */
+/* если ты добавлял модалку товара с гридом .pdp-grid — вот её адаптация */
+.pdp-grid{
+  display: grid;
+  grid-template-columns: 1.2fr 1fr;
+  gap: 16px;
+}
+.pdp-img img, .pdp-img svg{
+  width: 100%;
+  height: auto;
+  max-height: 72vh;        /* чтобы картинка не упиралась в низ */
+  object-fit: contain;
+}
+
+/* На телефоне делаем колонку: картинка сверху, параметры — ниже */
+@media (max-width: 900px){
+  .pdp-grid{ grid-template-columns: 1fr; }
+  .pdp-img{ order: 1; }
+  .pdp-info{ order: 2; }
+}
+
+/* Кнопки-«чипсы» для размера/цвета — большие тач-таргеты */
+.opt-chip{
+  display:inline-flex; align-items:center; justify-content:center;
+  min-width: 44px; min-height: 36px;
+  padding: 6px 10px; border:1px solid var(--line);
+  border-radius:10px; background:var(--soft); cursor:pointer;
+}
+.opt-chip.active{
+  background: var(--soft-active);
+  border-color:#bdd0ff;
+  box-shadow:0 0 0 2px #bdd0ff;
+}
+
+/* Кнопки в ряд — на телефоне тянем на всю ширину */
+@media (max-width: 720px){
+  .pdp-actions{ display:grid; grid-template-columns: 1fr; gap:8px; }
+  .btn{ padding:12px; }
+}
+
+/* Диалоги на очень узких экранах — ширина во всю вьюпорт */
+@media (max-width: 480px){
+  .modal-card, .modal-card.wide{ width: 96vw; border-radius: 12px; }
+}
+
+/* Подстрахуем любые переполнения */
+img, svg{ max-width:100%; height:auto; }
+html, body{ overflow-x:hidden; }
+
+/* === 2.2.1 Общие ограничения, чтобы ничего не вываливалось === */
+html, body{ overflow-x:hidden; }
+.modal-card{
+  max-height: calc(100vh - 24px);
+  overflow: auto;
+}
+
+/* Обёртка для таблиц админки — горизонтальный скролл внутри блока, а не всей страницы */
+.table-wrap{ overflow:auto; max-width:100%; }
+.table-wrap .orders,        /* таблица заказов */
+.table-wrap #prodTable{ min-width: 760px; }  /* не ломаем колонки */
+
+/* Админ-грид: одна колонка на телефоне */
+@media (max-width:980px){
+  .admin-grid{ grid-template-columns: 1fr !important; }
+}
+
+/* === 2.2.2 Корзина: перестраиваем строки в компактную карточку на телефоне === */
+@media (max-width: 700px){
+  .cart-item{
+    grid-template-columns: 64px 1fr;
+    grid-template-areas:
+      "img info"
+      "price qty"
+      "remove qty";
+    align-items: start;
+  }
+  .cart-item .ph{ grid-area: img; }
+  .cart-item > div:nth-child(2){ grid-area: info; }   /* блок с title + muted */
+  .cart-item > div:nth-child(3){ grid-area: price; font-weight: 700; } /* цена */
+  .cart-item .qty{ grid-area: qty; justify-self: end; }
+  .cart-item .remove{ grid-area: remove; justify-self: start; }
+  .qty input{ width: 72px; }
+  .cart-summary{ position: sticky; bottom: 0; } /* чтобы сумма всегда под рукой */
+}
+
+/* Чтобы левая/правая панель в модалке не выезжали за пределы на узких */
+@media (max-width: 900px){
+  .modal-body.split{ grid-template-columns: 1fr; }
+}
+
+/* === 2.2.3 Модалка товара (если используешь детальную карточку) === */
+.pdp-grid{
+  display: grid; gap: 16px;
+  grid-template-columns: 1.2fr 1fr;
+}
+.pdp-img img, .pdp-img svg{
+  width:100%; height:auto; max-height:72vh; object-fit:contain;
+}
+@media (max-width: 900px){
+  .pdp-grid{ grid-template-columns: 1fr; }
+  .pdp-img{ order: 1; }
+  .pdp-info{ order: 2; }
+}
+.pdp-actions{ display:flex; gap:10px; flex-wrap:wrap }
+@media (max-width: 720px){
+  .pdp-actions{ display:grid; grid-template-columns: 1fr; }
+}
+
+/* Чипсы для размеров/цветов (тач-удобные) */
+.opt-chip{
+  display:inline-flex; align-items:center; justify-content:center;
+  min-width:44px; min-height:36px; padding:6px 10px;
+  border:1px solid var(--line); border-radius:10px;
+  background:var(--soft); cursor:pointer;
+}
+.opt-chip.active{
+  background:var(--soft-active);
+  border-color:#bdd0ff;
+  box-shadow:0 0 0 2px #bdd0ff;
+}
+
+/* Грид плиток: сам подбирает колонки по ширине карточки */
+.grid{ display:grid; gap:16px; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+
+/* Ограничим визуальную «крышку» изображения, чтобы плитки были ниже */
+.card .img{ max-height: 260px; }
+@media (max-width: 480px){
+  .card .img{ max-height: 200px; }
+}

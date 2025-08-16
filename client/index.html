@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Майки — магазин</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- Header -->
+  <header class="site-header">
+<a id="logoHome" class="logo" href="#">
+  <img class="logo-img" src="img/gan-logo.jpg" alt="GAN">
+
+</a>
+
+
+
+    <div class="search">
+      <input id="q" placeholder="Поиск по названию или категории">
+      <button id="searchBtn" class="btn">Поиск</button>
+    </div>
+
+    <select id="sortSelect" class="btn">
+      <option value="pop">По популярности</option>
+      <option value="priceAsc">Цена ↑</option>
+      <option value="priceDesc">Цена ↓</option>
+    </select>
+
+    <button id="clearFilters" class="btn btn-ghost">Сброс</button>
+    <button id="adminBtn" class="btn btn-ghost">Админка</button>
+
+    <button id="myOrdersBtn" class="btn btn-ghost" hidden>Мои заказы</button>
+    <button id="themeToggle" class="btn btn-ghost" title="Переключить тему">🌙 Тёмная</button>
+
+    <button id="cartOpenBtn" class="btn badge">
+      Корзина <span id="cartCount" class="badge-dot">0</span>
+    </button>
+
+    <button id="loginBtn" class="btn">Войти</button>
+  </header>
+
+  <!-- Layout -->
+  <main class="layout">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <h3>Категории</h3>
+      <ul id="cats" class="cats"></ul>
+      <div class="hint">Выберите категорию или воспользуйтесь поиском.</div>
+    </aside>
+
+    <!-- Catalog -->
+    <section class="catalog">
+      <div class="toolbar">
+        <div class="welcome">Пользователь: <b id="welcome">Гость</b></div>
+        <div class="spacer"></div>
+      </div>
+      <div id="grid" class="grid"></div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div>© Майки — демо-магазин</div>
+    <div class="small">Оплата имитируется, заказы и каталог хранятся локально в браузере.</div>
+  </footer>
+
+  <!-- Cart modal -->
+  <dialog id="cartModal" class="modal">
+    <div class="modal-card wide">
+      <div class="modal-head">
+        <strong>Корзина</strong>
+        <button class="icon-btn" aria-label="Закрыть">✖</button>
+      </div>
+      <div class="modal-body split">
+        <div>
+          <ul id="cartList" class="cart-list"></ul>
+          <div id="cartEmpty" class="cart-empty">Корзина пуста</div>
+        </div>
+        <aside class="cart-summary">
+          <div class="sum-row"><span>Товары</span><span id="sumItems">0 ֏</span></div>
+          <div class="sum-row"><span>Доставка</span><span id="sumShip">0 ֏</span></div>
+          <div class="sum-total"><span>Итого</span><span id="sumTotal">0 ֏</span></div>
+          <button id="checkoutBtn" class="btn primary" style="width:100%;margin-top:8px">Оформить</button>
+        </aside>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Checkout modal -->
+  <dialog id="checkoutModal" class="modal">
+    <div class="modal-card">
+      <div class="modal-head">
+        <strong>Оформление заказа</strong>
+        <button class="icon-btn" aria-label="Закрыть">✖</button>
+      </div>
+      <div class="modal-body">
+        <div id="checkoutAuthWarn" class="warn" hidden>Для оформления заказа войдите в аккаунт.</div>
+        <label>ФИО <input id="fio" placeholder="Имя Фамилия"></label>
+        <label>Контакт (телеграм/телефон) <input id="contact" placeholder="+374 ... / @ник"></label>
+        <label>Адрес <input id="address" placeholder="Город, улица, дом"></label>
+        <label>Оплата
+          <select id="payment">
+            <option value="transfer">Перевод на карту</option>
+            <option value="cash">Наличные при получении</option>
+          </select>
+        </label>
+        <div class="row">
+          <button id="placeOrder" class="btn primary">Создать заказ</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Payment modal (demo) -->
+  <dialog id="payModal" class="modal">
+    <div class="modal-card">
+      <div class="modal-head">
+        <strong>Оплата заказа</strong>
+        <button class="icon-btn" aria-label="Закрыть">✖</button>
+      </div>
+      <div class="modal-body">
+        <div>Заказ: <b id="payOrderId"></b></div>
+        <div>Сумма: <b id="payAmount"></b></div>
+        <div>Карта: <b id="payCard"></b> <a href="#" id="copyCard" class="small">копировать</a></div>
+        <div class="row">
+          <button id="markPaid" class="btn primary">Я перевёл — проверить</button>
+        </div>
+        <div class="small help">Проверка имитируется: админ может нажать «Имит. платёж» в админке.</div>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Auth modal -->
+  <dialog id="authModal" class="modal">
+    <div class="modal-card">
+      <div class="modal-head">
+        <strong>Аккаунт</strong>
+        <button class="icon-btn" aria-label="Закрыть">✖</button>
+      </div>
+      <div class="modal-body">
+        <div class="tabs">
+          <button class="tab active" data-tab="login">Вход</button>
+          <button class="tab" data-tab="register">Регистрация</button>
+        </div>
+
+        <div class="tab-pane active" data-pane="login">
+          <label>Ник <input id="loginNick"></label>
+          <label>Пароль <input id="loginPass" type="password"></label>
+          <button id="doLogin" class="btn primary">Войти</button>
+        </div>
+
+        <div class="tab-pane" data-pane="register">
+          <label>Ник <input id="regNick"></label>
+          <label>Пароль <input id="regPass" type="password"></label>
+          <label>Подтвердите пароль <input id="regPass2" type="password"></label>
+          <button id="doRegister" class="btn primary">Зарегистрироваться</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Admin -->
+  <section id="admin" class="admin view" hidden>
+    <header class="admin-head">
+      <h2>Админка</h2>
+      <div class="admin-actions">
+        <button id="goShop" class="btn btn-ghost">← В магазин</button>
+        <button id="resetDemoBtn" class="btn btn-ghost">Сброс демо</button>
+        <button id="logoutBtn" class="btn">Выйти</button>
+      </div>
+    </header>
+
+    <!-- Tabs -->
+    <nav class="admin-tabs">
+      <button class="adm-tab active" data-tab="orders">Заказы</button>
+      <button class="adm-tab" data-tab="catalog">Каталог</button>
+      <button class="adm-tab" data-tab="cats">Категории</button>
+    </nav>
+
+    <!-- Orders pane -->
+    <section class="admin-pane active" data-pane="orders">
+      <div class="admin-toolbar">
+        <label>Статус:
+          <select id="statusFilter">
+            <option value="all">Все</option>
+            <option value="pending">Ожидает оплаты</option>
+            <option value="paid">Оплачен</option>
+            <option value="done">Выполнен</option>
+            <option value="canceled">Отменён</option>
+          </select>
+        </label>
+      </div>
+
+      <table class="orders">
+        <thead>
+          <tr>
+            <th>ID</th><th>Когда</th><th>Покупатель</th><th>Состав</th><th>Оплата</th><th>Итого</th><th>Статус</th><th>Действия</th>
+          </tr>
+        </thead>
+        <tbody id="ordersTbody"></tbody>
+      </table>
+    </section>
+
+    <!-- Catalog pane -->
+    <section class="admin-pane" data-pane="catalog">
+      <div class="admin-grid" id="catalogGrid">
+        <!-- слева таблица -->
+        <div class="card" id="prodTableCard">
+          <h3 style="display:flex;justify-content:space-between;align-items:center">
+            <span>Каталог</span>
+            <button id="exportCatalogBtn" class="btn btn-ghost small">Экспорт JSON</button>
+          </h3>
+          <table class="orders" id="prodTable">
+            <thead>
+              <tr><th>ID</th><th>Название</th><th>Категория</th><th>Цена</th><th>Размеры</th><th>Цвета</th><th></th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <!-- справа форма -->
+        <form id="prodForm" class="card form">
+          <h3>Товар</h3>
+          <input type="hidden" id="prodId" />
+          <label>Название <input id="prodTitle" required></label>
+          <label>Цена (֏) <input id="prodPrice" type="number" min="0" step="1" required></label>
+          <label>Категория
+            <select id="prodCatSel" required></select>
+          </label>
+          <div class="small help">Категории редактируются на вкладке «Категории».</div>
+          <label>Размеры (через запятую) <input id="prodSizes" placeholder="S, M, L, XL"></label>
+          <label>Цвета (через запятую) <input id="prodColors" placeholder="Белый, Чёрный"></label>
+          <details>
+            <summary>Картинка (выбери один вариант)</summary>
+            <label>SVG (вставь код)
+              <textarea id="prodSvg" rows="6" placeholder="<svg>…"></textarea>
+            </label>
+            <label>или загрузить файл (PNG/JPG/WebP/SVG)
+              <input id="prodImg" type="file" accept=".png,.jpg,.jpeg,.webp,.svg,image/*">
+            </label>
+          </details>
+          <div class="row">
+            <button id="prodSave" class="btn primary" type="submit">Сохранить</button>
+            <button id="prodReset" class="btn btn-ghost" type="button">Сброс формы</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- Categories pane -->
+    <section class="admin-pane" data-pane="cats">
+      <div class="admin-grid" style="grid-template-columns: 1fr">
+        <div class="card" id="catManager">
+          <h3>Категории</h3>
+          <form id="catForm" class="row">
+            <input id="newCatName" placeholder="Новая категория" required>
+            <button class="btn primary" type="submit">Добавить</button>
+          </form>
+          <ul id="catList" class="cats" style="margin-top:10px"></ul>
+          <div class="small help">Меню слева и список в форме товара берутся отсюда.</div>
+        </div>
+      </div>
+    </section>
+  </section>
+
+  <!-- Мои заказы -->
+  <dialog id="myOrdersModal" class="modal">
+    <div class="modal-card wide">
+      <div class="modal-head">
+        <strong>Мои заказы</strong>
+        <button class="icon-btn" aria-label="Закрыть">✖</button>
+      </div>
+      <div class="modal-body" id="myOrdersBody"></div>
+    </div>
+  </dialog>
+
+  <!-- Toast wrap -->
+  <div id="toastWrap" class="toast-wrap" aria-live="polite"></div>
+
+<script src="sync-bridge.js"></script>
+<script src="app.js"></script>
+
+
+
+</body>
+</html>
