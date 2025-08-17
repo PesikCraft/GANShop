@@ -3,6 +3,8 @@ const { Pool } = require('pg');
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
+  // Для Internal Database URL на Render ставим PGSSL=disable (тогда ssl:false).
+  // Для внешнего URL переменную PGSSL не задаем: используем SSL по умолчанию.
   ssl: process.env.PGSSL === 'disable' ? false : { rejectUnauthorized: false }
 });
 
@@ -28,4 +30,4 @@ async function set(key, val) {
 }
 
 module.exports = { init, get, set, pool };
-db.js
+
