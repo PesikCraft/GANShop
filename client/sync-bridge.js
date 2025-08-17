@@ -1,269 +1,418 @@
-/* sync-bridge.js v3.1 (ES5)
- * Синхронизирует catalog / orders / bank / users.
- * - Защита каталога от «отката»: X-Shop-Ts + 409, edit-lock 60s после правки.
- * - Кросс-девайс аккаунты: ключ shop_users <-> /api/users + зеркала (users, accounts, …).
- * - Чистый ES5, без =>/let/const/for-of.
- */
+// ES5-only sync bridge for localStorage <-> server
 (function () {
-  if (!window || !window.localStorage) return;
+  var BRIDGE_VER = '1.0.0';
 
-  // ---- ключи (основные) ----
-  var KEY_PRODUCTS='shop_catalog';
-  var KEY_CATS='shop_cats';
-  var KEY_ORDERS='shop_orders';
-  var KEY_BANK='mock_bank';
-  var KEY_USERS='shop_users';
+  // --- Config
+  var PULL_INTERVAL_MS = 5000;  // лёгкий pull каждые ~5 сек
+  var DEBOUNCE_MS = 300;        // дебаунс PUT
+  var CATALOG_LOCK_MS = 60000;  // короткий лок после локальной правки каталога
 
-  // ---- синонимы ----
-  var SYN_CATALOG_STATIC=['products','goods','catalog'];
-  var SYN_ORDERS_STATIC=['my_orders'];
-  var SYN_USERS_STATIC=['users','accounts','auth_users','user_list','profiles'];
+  // --- Keys
+  var BASE_KEYS = {
+    orders: 'shop_orders',
+    catalog: 'shop_catalog',
+    cats: 'shop_cats',
+    bank: 'mock_bank',
+    users: 'shop_users'
+  };
 
-  // интервалы
-  var PULL_INTERVAL_MS=5000, PUT_DEBOUNCE_MS=300, WATCH_INTERVAL_MS=400, DIRTY_HOLD_MS=5000;
+  // Mirrors: synonyms (static)
+  var MIRRORS = {
+    orders: ['my_orders'],
+    catalog: ['products', 'goods', 'catalog'],
+    users: ['users', 'accounts', 'auth_users']
+    // bank: no mirrors by spec
+  };
 
-  // лок каталога
-  var EDIT_LOCK_MS=60000, LS_TS_KEY='sb_cat_last_local_change', LS_LOCK_UNTIL='sb_cat_edit_lock_until';
+  // dynamic mirrors patterns
+  function isOrdersUserKey(key) { return key.indexOf('shop_orders_') === 0; }
+  function isCatalogUserKey(key) { return key.indexOf('shop_catalog_') === 0; }
+  function isUserEntryKey(key) { return key.indexOf('user:') === 0; }
 
-  // ---- утилы ----
-  function now(){ return Date.now(); }
-  function parseJson(s){ try{ return JSON.parse(s); }catch(e){ return null; } }
-  function parseArr(s){ var v=parseJson(s); return Array.isArray(v)?v:[]; }
-  function j(v){ try{ return JSON.stringify(v) }catch(e){ return '[]' } }
-  function same(a,b){ return j(a)===j(b); }
-  function uname(u){ return (u && (u.nick||u.login||u.username||u.id||u.name)||'').toString().trim(); }
+  // --- State
+  var _origSetItem = localStorage.setItem;
+  var _origRemoveItem = localStorage.removeItem;
+  var _internalWriteNesting = 0;
 
-  function req(method,url,body,headers){
-    if (window.fetch){
-      var h={'Content-Type':'application/json'};
-      if (headers){ for (var k in headers) if (Object.prototype.hasOwnProperty.call(headers,k)) h[k]=headers[k]; }
-      var o={method:method,headers:h};
-      if (body) o.body=JSON.stringify(body);
-      return fetch(url,o).then(function(r){
-        return r.json()['catch'](function(){ return {}; }).then(function(data){ return { ok:r.ok, status:r.status, data:data }; });
-      });
-    }
-    return new Promise(function(resolve){
-      var x=new XMLHttpRequest(); x.open(method,url,true);
-      x.setRequestHeader('Content-Type','application/json');
-      if (headers){ for (var k in headers) if (Object.prototype.hasOwnProperty.call(headers,k)) x.setRequestHeader(k, headers[k]); }
-      x.onreadystatechange=function(){
-        if (x.readyState===4){
-          var data={}; try{ data=JSON.parse(x.responseText||'{}'); }catch(_){}
-          resolve({ ok:x.status>=200&&x.status<300, status:x.status, data:data });
-        }
-      };
-      x.onerror=function(){ resolve({ ok:false, status:0, data:{} }); };
-      x.send(body?JSON.stringify(body):null);
-    });
-  }
+  var _debounceTimers = { orders: 0, catalog: 0, bank: 0, users: 0 };
+  var _catalogLocalTs = 0;       // последняя локальная правка каталога
+  var _catalogEditLockUntil = 0; // до какого времени не затирать pull'ом
 
-  // ---- безопасные setItem/removeItem ----
-  var mute={};
-  var _set=localStorage.setItem.bind(localStorage);
-  var _rem=localStorage.removeItem.bind(localStorage);
-  function muteKey(k,v){ mute[k]=v?1:0; }
-  function isMuted(k){ return !!mute[k]; }
-  function setLS(k,v){ muteKey(k,true); try{ _set(k,v); }catch(_){ } muteKey(k,false); }
-  function remLS(k){ muteKey(k,true); try{ _rem(k); }catch(_){ } muteKey(k,false); }
-
-  function keysByPrefix(prefix){
-    var r=[]; try{ for (var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); if (k && k.indexOf(prefix)===0) r.push(k); } }catch(_){}
-    return r;
-  }
-  function isCatalogSyn(key){ if(!key) return false; if(SYN_CATALOG_STATIC.indexOf(key)!==-1) return true; return key.indexOf('shop_catalog_')===0; }
-  function isOrdersSyn(key){ if(!key) return false; if(SYN_ORDERS_STATIC.indexOf(key)!==-1) return true; return key.indexOf('shop_orders_')===0; }
-  function isUsersSyn(key){ if(!key) return false; if(SYN_USERS_STATIC.indexOf(key)!==-1) return true; return key.indexOf('shop_users_')===0 || key.indexOf('users_')===0 || key.indexOf('accounts_')===0; }
-
-  // ---- каталог helpers ----
-  function recomputeCats(products){
-    var cats=[], i, p, c;
-    for(i=0;i<products.length;i++){
-      p=products[i]||{}; c=p.cat||p.category||p.categoryId||p.catId;
-      if (c && cats.indexOf(c)===-1) cats.push(c);
-    }
-    return cats;
-  }
-  function getLocalProducts(){ return parseArr(localStorage.getItem(KEY_PRODUCTS)); }
-  function setLocalProducts(arr){
-    setLS(KEY_PRODUCTS, j(arr||[]));
-    var ts=now(); setLS(LS_TS_KEY,String(ts)); setLS(LS_LOCK_UNTIL,String(ts+EDIT_LOCK_MS));
-    setLS(KEY_CATS, j(recomputeCats(arr||[])));
-    mirrorFromPrimary();
-  }
-  function isEditLocked(){ return (parseInt(localStorage.getItem(LS_LOCK_UNTIL)||'0',10)||0) > now(); }
-
-  // ---- USERS зеркала ----
-  function mirrorUsers(usersArr){
-    usersArr = Array.isArray(usersArr) ? usersArr : [];
-    // массив
-    setLS(KEY_USERS, j(usersArr));
-    // словари (по нику/логину/имени)
-    var dict={}, dictLC={}, names=[], i, u, name;
-    for(i=0;i<usersArr.length;i++){
-      u=usersArr[i]||{}; name=uname(u);
-      if(!name) continue;
-      dict[name]=u; dictLC[name.toLowerCase()]=u;
-      if (names.indexOf(name)===-1) names.push(name);
-    }
-    var dictStr=j(dict), dictLCStr=j(dictLC), namesStr=j(names);
-    var iKey;
-    for(iKey=0;iKey<SYN_USERS_STATIC.length;iKey++) setLS(SYN_USERS_STATIC[iKey], dictStr);
-    setLS('users_lc', dictLCStr); setLS('accounts_lc', dictLCStr); setLS('auth_users_lc', dictLCStr);
-    var idx=['usernames','nicknames','login_list','users_keys','users_index','users-list'];
-    for(iKey=0;iKey<idx.length;iKey++) setLS(idx[iKey], namesStr);
-    for(i=0;i<names.length;i++){ // пер-юзер зеркала
-      var nm=names[i], ustr=JSON.stringify(dict[nm]);
-      setLS('user:'+nm, ustr); setLS('users:'+nm, ustr); setLS('account:'+nm, ustr); setLS('profile:'+nm, ustr); setLS('shop_users:'+nm, ustr);
-    }
-  }
-
-  // ---- глобальные зеркала (catalog/orders/users) ----
-  function mirrorFromPrimary(){
-    var ordStr=localStorage.getItem(KEY_ORDERS)||'[]';
-    setLS('my_orders',ordStr); var op=keysByPrefix('shop_orders_'); for (var i=0;i<op.length;i++) setLS(op[i],ordStr);
-
-    var prodStr=localStorage.getItem(KEY_PRODUCTS)||'[]';
-    setLS('products',prodStr); setLS('goods',prodStr); setLS('catalog',prodStr);
-    var cp=keysByPrefix('shop_catalog_'); for (i=0;i<cp.length;i++) setLS(cp[i],prodStr);
-
-    mirrorUsers(parseArr(localStorage.getItem(KEY_USERS)||'[]'));
-  }
-
-  function copyToPrimaryIfSynonym(key){
-    var v=localStorage.getItem(key);
-    if (isCatalogSyn(key)) setLocalProducts(parseArr(v||'[]'));
-    if (isOrdersSyn(key))  setLS(KEY_ORDERS, v||'[]');
-    if (isUsersSyn(key))   setLS(KEY_USERS, v||'[]');
-  }
-
-  // ---- планировщик PUSH ----
-  var timers={catalog:null,orders:null,bank:null,users:null};
-  var dirtyUntil={catalog:0,orders:0,bank:0,users:0};
-  function markDirty(g){ dirtyUntil[g]=now()+DIRTY_HOLD_MS; }
-
-  function schedulePush(group){
-    if (timers[group]){ clearTimeout(timers[group]); timers[group]=null; }
-    markDirty(group);
-    timers[group]=setTimeout(function(){
-      if (group==='catalog'){
-        var products=getLocalProducts(), cats=recomputeCats(products);
-        var ts=parseInt(localStorage.getItem(LS_TS_KEY)||'0',10)||now();
-        setLS(KEY_CATS, j(cats));
-        req('PUT','/api/catalog',{products:products,cats:cats},{'X-Shop-Ts': String(ts)}).then(function(r){
-          if(!r.ok && r.status===409 && r.data){
-            var svProds=Array.isArray(r.data.products)?r.data.products:[]; var svCats=Array.isArray(r.data.cats)?r.data.cats:recomputeCats(svProds);
-            setLS(KEY_PRODUCTS, j(svProds)); setLS(KEY_CATS, j(svCats)); mirrorFromPrimary();
-          }
-        });
-      } else if (group==='orders'){
-        var orders=parseArr(localStorage.getItem(KEY_ORDERS));
-        req('PUT','/api/orders',{orders:orders},{'X-Shop-Ts': String(now())});
-      } else if (group==='bank'){
-        var log=parseArr(localStorage.getItem(KEY_BANK));
-        req('PUT','/api/bank',{log:log},{'X-Shop-Ts': String(now())});
-      } else if (group==='users'){
-        var users=parseArr(localStorage.getItem(KEY_USERS));
-        req('PUT','/api/users',{users:users},{'X-Shop-Ts': String(now())}).then(function(){ mirrorUsers(users); });
+  // --- HTTP helpers (XHR, ES5)
+  function httpGet(url, cb) {
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', url, true);
+    xhr.setRequestHeader('Cache-Control', 'no-store');
+    xhr.onreadystatechange = function () {
+      if (xhr.readyState === 4) {
+        var data = null;
+        try { data = JSON.parse(xhr.responseText || 'null'); } catch (e) {}
+        cb(xhr.status, data, xhr);
       }
-    }, PUT_DEBOUNCE_MS);
+    };
+    xhr.send(null);
   }
 
-  // ---- перехват localStorage ----
-  localStorage.setItem=function(key,value){
-    var r; try{ r=_set(key,value); }catch(_){}
-    if (!isMuted(key)){
-      if (isCatalogSyn(key)||isOrdersSyn(key)||isUsersSyn(key)) copyToPrimaryIfSynonym(key);
-      if (key===KEY_PRODUCTS||key===KEY_CATS||isCatalogSyn(key)) schedulePush('catalog');
-      else if (key===KEY_ORDERS||isOrdersSyn(key)) schedulePush('orders');
-      else if (key===KEY_BANK) schedulePush('bank');
-      else if (key===KEY_USERS||isUsersSyn(key)) schedulePush('users');
+  function httpPut(url, payload, headers, cb) {
+    var xhr = new XMLHttpRequest();
+    xhr.open('PUT', url, true);
+    xhr.setRequestHeader('Content-Type', 'application/json');
+    if (headers) {
+      for (var k in headers) {
+        if (Object.prototype.hasOwnProperty.call(headers, k)) {
+          xhr.setRequestHeader(k, headers[k]);
+        }
+      }
     }
-    return r;
+    xhr.onreadystatechange = function () {
+      if (xhr.readyState === 4) {
+        var data = null;
+        try { data = JSON.parse(xhr.responseText || 'null'); } catch (e) {}
+        cb(xhr.status, data, xhr);
+      }
+    };
+    try {
+      xhr.send(JSON.stringify(payload));
+    } catch (e) {
+      cb(0, null, xhr);
+    }
+  }
+
+  // --- Utils
+  function safeParseArray(json) {
+    if (typeof json !== 'string') return [];
+    try {
+      var v = JSON.parse(json);
+      return Array.isArray(v) ? v : [];
+    } catch (e) { return []; }
+  }
+  function getLS(key) {
+    try { return localStorage.getItem(key); } catch (e) { return null; }
+  }
+  function setLS(key, value) {
+    // guard against recursion
+    _internalWriteNesting++;
+    try {
+      _origSetItem.call(localStorage, key, value);
+    } finally {
+      _internalWriteNesting--;
+    }
+  }
+  function removeLS(key) {
+    _internalWriteNesting++;
+    try {
+      _origRemoveItem.call(localStorage, key);
+    } finally {
+      _internalWriteNesting--;
+    }
+  }
+  function sameJson(a, b) { return String(a || '') === String(b || ''); }
+
+  // --- Key classification -> kind
+  function keyToKind(key) {
+    if (!key) return null;
+    if (key === BASE_KEYS.orders || key === 'my_orders' || isOrdersUserKey(key)) return 'orders';
+    if (key === BASE_KEYS.catalog || key === BASE_KEYS.cats ||
+        key === 'products' || key === 'goods' || key === 'catalog' ||
+        isCatalogUserKey(key)) return 'catalog';
+    if (key === BASE_KEYS.bank) return 'bank';
+    if (key === BASE_KEYS.users || key === 'users' || key === 'accounts' || key === 'auth_users' || isUserEntryKey(key)) return 'users';
+    return null;
+  }
+
+  // --- Mirror writers (best-effort, non-invasive)
+  function writeOrdersMirrors(arr) {
+    // base mirror
+    try { setLS('my_orders', JSON.stringify(arr)); } catch (e) {}
+    // dynamic mirrors are only listened to (we do not fan-out blindly per user)
+  }
+
+  function writeCatalogMirrors(productsArr) {
+    try { setLS('products', JSON.stringify(productsArr)); } catch (e) {}
+    try { setLS('goods', JSON.stringify(productsArr)); } catch (e) {}
+    try { setLS('catalog', JSON.stringify(productsArr)); } catch (e) {}
+    // dynamic mirrors are only listened to
+  }
+
+  function writeUsersMirrors(usersArr) {
+    try { setLS('users', JSON.stringify(usersArr)); } catch (e) {}
+    try { setLS('accounts', JSON.stringify(usersArr)); } catch (e) {}
+    try { setLS('auth_users', JSON.stringify(usersArr)); } catch (e) {}
+    // dictionaries: users_lc / accounts_lc map lowercased nick -> original nick
+    var dict = {};
+    for (var i = 0; i < usersArr.length; i++) {
+      var u = usersArr[i] || {};
+      var nick = String(u.nick || u.name || '').trim();
+      if (nick) dict[nick.toLowerCase()] = nick;
+      // user:<nick> -> JSON(user)
+      if (nick) {
+        try { setLS('user:' + nick, JSON.stringify(u)); } catch (e) {}
+      }
+    }
+    try { setLS('users_lc', JSON.stringify(dict)); } catch (e) {}
+    try { setLS('accounts_lc', JSON.stringify(dict)); } catch (e) {}
+  }
+
+  // --- Debounced PUT
+  function schedulePut(kind) {
+    if (_debounceTimers[kind]) {
+      clearTimeout(_debounceTimers[kind]);
+    }
+    _debounceTimers[kind] = setTimeout(function () {
+      _debounceTimers[kind] = 0;
+      doPut(kind);
+    }, DEBOUNCE_MS);
+  }
+
+  function doPut(kind) {
+    if (kind === 'catalog') {
+      var products = safeParseArray(getLS(BASE_KEYS.catalog) || '[]');
+      var cats = safeParseArray(getLS(BASE_KEYS.cats) || '[]');
+      httpPut('/api/catalog', { products: products, cats: cats }, { 'X-Shop-Ts': String(_catalogLocalTs || 0) }, function (status, data, xhr) {
+        var serverTsHeader = xhr && xhr.getResponseHeader ? xhr.getResponseHeader('X-Shop-Ts') : null;
+        if (status === 200 && data) {
+          if (serverTsHeader) _catalogLocalTs = Number(serverTsHeader) || _catalogLocalTs;
+        } else if (status === 409 && data && data.products && data.cats) {
+          // сервер отверг — принимаем его данные
+          applyCatalogFromServer(data.products, data.cats, serverTsHeader ? Number(serverTsHeader) : 0);
+        }
+      });
+      return;
+    }
+
+    if (kind === 'orders') {
+      var orders = safeParseArray(getLS(BASE_KEYS.orders) || '[]');
+      httpPut('/api/orders', { orders: orders }, null, function () {});
+      return;
+    }
+
+    if (kind === 'bank') {
+      var log = safeParseArray(getLS(BASE_KEYS.bank) || '[]');
+      httpPut('/api/bank', { log: log }, null, function () {});
+      return;
+    }
+
+    if (kind === 'users') {
+      var users = safeParseArray(getLS(BASE_KEYS.users) || '[]');
+      httpPut('/api/users', { users: users }, null, function () {});
+      return;
+    }
+  }
+
+  // --- Apply from server (guarding recursion)
+  function applyCatalogFromServer(productsArr, catsArr, serverTs) {
+    if (typeof serverTs === 'number' && serverTs > 0) {
+      _catalogLocalTs = serverTs;
+    }
+    setLS(BASE_KEYS.catalog, JSON.stringify(productsArr || []));
+    setLS(BASE_KEYS.cats, JSON.stringify(catsArr || []));
+    writeCatalogMirrors(productsArr || []);
+  }
+  function applyOrdersFromServer(ordersArr) {
+    setLS(BASE_KEYS.orders, JSON.stringify(ordersArr || []));
+    writeOrdersMirrors(ordersArr || []);
+  }
+  function applyBankFromServer(logArr) {
+    setLS(BASE_KEYS.bank, JSON.stringify(logArr || []));
+  }
+  function applyUsersFromServer(usersArr) {
+    setLS(BASE_KEYS.users, JSON.stringify(usersArr || []));
+    writeUsersMirrors(usersArr || []);
+  }
+
+  // --- Intercept localStorage mutations
+  localStorage.setItem = function (key, value) {
+    var kind = keyToKind(String(key));
+    var isSelf = _internalWriteNesting > 0;
+
+    // Call original first (so app.js sees its own changes immediately)
+    _origSetItem.call(localStorage, key, value);
+
+    if (isSelf) return; // ignore bridge's own writes
+
+    if (kind === 'catalog') {
+      // любое изменение каталога/категорий/его зеркал — обновляем базовые ключи и планируем PUT
+      if (key === BASE_KEYS.cats) {
+        // normalize: ensure base 'shop_cats' already updated by original call
+      } else if (key !== BASE_KEYS.catalog) {
+        // mirrors changed -> fan-in to base
+        var arr = safeParseArray(value);
+        setLS(BASE_KEYS.catalog, JSON.stringify(arr));
+        writeCatalogMirrors(arr);
+      } else {
+        // base changed by app
+        writeCatalogMirrors(safeParseArray(value));
+      }
+      _catalogLocalTs = Date.now();
+      _catalogEditLockUntil = _catalogLocalTs + CATALOG_LOCK_MS;
+      schedulePut('catalog');
+      return;
+    }
+
+    if (kind === 'orders') {
+      if (key !== BASE_KEYS.orders) {
+        var ordersFromMirror = safeParseArray(value);
+        setLS(BASE_KEYS.orders, JSON.stringify(ordersFromMirror));
+        writeOrdersMirrors(ordersFromMirror);
+      } else {
+        writeOrdersMirrors(safeParseArray(value));
+      }
+      schedulePut('orders');
+      return;
+    }
+
+    if (kind === 'bank') {
+      // only base exists by spec
+      schedulePut('bank');
+      return;
+    }
+
+    if (kind === 'users') {
+      if (key !== BASE_KEYS.users) {
+        var usersFromMirror = safeParseArray(value);
+        setLS(BASE_KEYS.users, JSON.stringify(usersFromMirror));
+        writeUsersMirrors(usersFromMirror);
+      } else {
+        writeUsersMirrors(safeParseArray(value));
+      }
+      schedulePut('users');
+      return;
+    }
   };
-  localStorage.removeItem=function(key){
-    var r; try{ r=_rem(key); }catch(_){}
-    if (!isMuted(key)){
-      if (key===KEY_PRODUCTS||isCatalogSyn(key)){ setLocalProducts([]); schedulePush('catalog'); }
-      else if (key===KEY_CATS){ setLS(KEY_CATS,'[]'); schedulePush('catalog'); }
-      else if (key===KEY_ORDERS||isOrdersSyn(key)){ setLS(KEY_ORDERS,'[]'); schedulePush('orders'); }
-      else if (key===KEY_BANK){ setLS(KEY_BANK,'[]'); schedulePush('bank'); }
-      else if (key===KEY_USERS||isUsersSyn(key)){ setLS(KEY_USERS,'[]'); schedulePush('users'); }
+
+  localStorage.removeItem = function (key) {
+    var kind = keyToKind(String(key));
+    var isSelf = _internalWriteNesting > 0;
+
+    _origRemoveItem.call(localStorage, key);
+
+    if (isSelf) return;
+
+    // Removing a monitored key => treat as empty array push (to keep server in sync)
+    if (kind === 'catalog') {
+      setLS(BASE_KEYS.catalog, JSON.stringify([]));
+      setLS(BASE_KEYS.cats, JSON.stringify([]));
+      writeCatalogMirrors([]);
+      _catalogLocalTs = Date.now();
+      _catalogEditLockUntil = _catalogLocalTs + CATALOG_LOCK_MS;
+      schedulePut('catalog');
+      return;
     }
-    return r;
+    if (kind === 'orders') {
+      setLS(BASE_KEYS.orders, JSON.stringify([]));
+      writeOrdersMirrors([]);
+      schedulePut('orders');
+      return;
+    }
+    if (kind === 'bank') {
+      setLS(BASE_KEYS.bank, JSON.stringify([]));
+      schedulePut('bank');
+      return;
+    }
+    if (kind === 'users') {
+      setLS(BASE_KEYS.users, JSON.stringify([]));
+      writeUsersMirrors([]);
+      schedulePut('users');
+      return;
+    }
   };
 
-  // ---- watcher ----
-  var snapshot={};
-  function snapGet(k){ return localStorage.getItem(k); }
-  function saveSnap(k,v){ snapshot[k]=v; }
-  function trackKey(k, group){
-    var cur=snapGet(k);
-    if (snapshot[k]!==cur){
-      saveSnap(k,cur);
-      if (group==='catalog' && isCatalogSyn(k)) copyToPrimaryIfSynonym(k);
-      if (group==='orders'  && isOrdersSyn(k))  copyToPrimaryIfSynonym(k);
-      if (group==='users'   && isUsersSyn(k))   copyToPrimaryIfSynonym(k);
-      if (group) schedulePush(group);
-    }
-  }
-  function initSnapshot(){
-    var keys=[KEY_PRODUCTS,KEY_CATS,KEY_ORDERS,KEY_BANK,KEY_USERS]
-      .concat(SYN_CATALOG_STATIC).concat(SYN_ORDERS_STATIC).concat(SYN_USERS_STATIC)
-      .concat(keysByPrefix('shop_catalog_')).concat(keysByPrefix('shop_orders_')).concat(keysByPrefix('shop_users_'))
-      .concat(keysByPrefix('users_')).concat(keysByPrefix('accounts_'));
-    for (var i=0;i<keys.length;i++) saveSnap(keys[i], snapGet(keys[i]));
+  // --- Initial pull (blocking nothing; best-effort)
+  function initialSync() {
+    // catalog
+    httpGet('/api/catalog', function (status, data, xhr) {
+      if (status === 200 && data) {
+        var serverTsHeader = xhr && xhr.getResponseHeader ? xhr.getResponseHeader('X-Shop-Ts') : null;
+        var serverTs = serverTsHeader ? Number(serverTsHeader) : 0;
+
+        var newProducts = JSON.stringify(data.products || []);
+        var newCats = JSON.stringify(data.cats || []);
+        setLS(BASE_KEYS.catalog, newProducts);
+        setLS(BASE_KEYS.cats, newCats);
+        writeCatalogMirrors(data.products || []);
+        if (serverTs > 0) _catalogLocalTs = serverTs;
+      }
+    });
+
+    // orders
+    httpGet('/api/orders', function (status, data) {
+      if (status === 200 && data) {
+        applyOrdersFromServer(data.orders || []);
+      }
+    });
+
+    // bank
+    httpGet('/api/bank', function (status, data) {
+      if (status === 200 && data) {
+        applyBankFromServer(data.log || []);
+      }
+    });
+
+    // users
+    httpGet('/api/users', function (status, data) {
+      if (status === 200 && data) {
+        applyUsersFromServer(data.users || []);
+      }
+    });
   }
 
-  // ---- pull (учитывает edit-lock для каталога) ----
-  function applyServerCatalog(products){
-    setLS(KEY_PRODUCTS, j(products||[]));
-    setLS(KEY_CATS, j(recomputeCats(products||[])));
-    mirrorFromPrimary();
-  }
-  function pullOnce(){
-    req('GET','/api/catalog').then(function(r){
-      var d=r.data||{}, prods=Array.isArray(d&&d.products)?d.products:[];
-      if(!isEditLocked() && !same(parseArr(localStorage.getItem(KEY_PRODUCTS)), prods)) applyServerCatalog(prods);
+  // --- Periodic light pull
+  function periodicPull() {
+    // Catalog (respect short edit-lock)
+    httpGet('/api/catalog', function (status, data, xhr) {
+      if (status === 200 && data) {
+        if (Date.now() < _catalogEditLockUntil) {
+          return; // недавно редактировали локально — не трогаем
+        }
+        var serverTsHeader = xhr && xhr.getResponseHeader ? xhr.getResponseHeader('X-Shop-Ts') : null;
+        var serverTs = serverTsHeader ? Number(serverTsHeader) : 0;
+
+        var localProducts = getLS(BASE_KEYS.catalog) || '[]';
+        var localCats = getLS(BASE_KEYS.cats) || '[]';
+
+        var serverProducts = JSON.stringify(data.products || []);
+        var serverCats = JSON.stringify(data.cats || []);
+
+        if (!sameJson(localProducts, serverProducts) || !sameJson(localCats, serverCats)) {
+          applyCatalogFromServer(data.products || [], data.cats || [], serverTs);
+        } else {
+          if (serverTs > 0) _catalogLocalTs = serverTs;
+        }
+      }
     });
-    req('GET','/api/orders').then(function(r){
-      var d=r.data||{}, orders=Array.isArray(d&&d.orders)?d.orders:[];
-      if(!same(parseArr(localStorage.getItem(KEY_ORDERS)), orders)) setLS(KEY_ORDERS, j(orders));
-      mirrorFromPrimary();
+
+    // Orders
+    httpGet('/api/orders', function (status, data) {
+      if (status === 200 && data) {
+        var local = getLS(BASE_KEYS.orders) || '[]';
+        var server = JSON.stringify(data.orders || []);
+        if (!sameJson(local, server)) applyOrdersFromServer(data.orders || []);
+      }
     });
-    req('GET','/api/bank').then(function(r){
-      var d=r.data||{}, log=Array.isArray(d&&d.log)?d.log:[];
-      if(!same(parseArr(localStorage.getItem(KEY_BANK)), log)) setLS(KEY_BANK, j(log));
+
+    // Bank
+    httpGet('/api/bank', function (status, data) {
+      if (status === 200 && data) {
+        var local = getLS(BASE_KEYS.bank) || '[]';
+        var server = JSON.stringify(data.log || []);
+        if (!sameJson(local, server)) applyBankFromServer(data.log || []);
+      }
     });
-    req('GET','/api/users').then(function(r){
-      var d=r.data||{}, users=Array.isArray(d&&d.users)?d.users:[];
-      if(!same(parseArr(localStorage.getItem(KEY_USERS)), users)){ setLS(KEY_USERS, j(users)); mirrorUsers(users); }
+
+    // Users
+    httpGet('/api/users', function (status, data) {
+      if (status === 200 && data) {
+        var local = getLS(BASE_KEYS.users) || '[]';
+        var server = JSON.stringify(data.users || []);
+        if (!sameJson(local, server)) applyUsersFromServer(data.users || []);
+      }
     });
-  }
-  function startPolling(){
-    setInterval(function(){
-      var t=now(); function ok(g){ return t>=dirtyUntil[g]; }
-      if (ok('catalog')||ok('orders')||ok('bank')||ok('users')) pullOnce();
-    }, PULL_INTERVAL_MS);
   }
 
-  // ---- старт ----
-  (function init(){
-    initSnapshot();
-    pullOnce();
-    setInterval(function(){
-      trackKey(KEY_PRODUCTS,'catalog');
-      trackKey(KEY_CATS,'catalog');
-      trackKey(KEY_ORDERS,'orders');
-      trackKey(KEY_BANK,'bank');
-      trackKey(KEY_USERS,'users');
+  // Kick off
+  initialSync();
+  setInterval(periodicPull, PULL_INTERVAL_MS);
 
-      var i, list;
-      list=SYN_CATALOG_STATIC.concat(keysByPrefix('shop_catalog_')); for(i=0;i<list.length;i++) trackKey(list[i],'catalog');
-      list=SYN_ORDERS_STATIC.concat(keysByPrefix('shop_orders_'));  for(i=0;i<list.length;i++) trackKey(list[i],'orders');
-      list=SYN_USERS_STATIC.concat(keysByPrefix('shop_users_')).concat(keysByPrefix('users_')).concat(keysByPrefix('accounts_'));
-      for(i=0;i<list.length;i++) trackKey(list[i],'users');
-    }, WATCH_INTERVAL_MS);
-    startPolling();
-  })();
+  // Expose a tiny debug flag (optional, harmless)
+  try { setLS('sync_bridge_ver', JSON.stringify(BRIDGE_VER)); } catch (e) {}
 })();
