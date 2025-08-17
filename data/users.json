@@ -1,3 +1,17 @@
 [
-  { "nick": "admin", "password": "admin123", "role": "admin" }
+  {
+    "id": 1,
+    "nick": "admin",
+    "name": "admin",
+    "username": "admin",
+    "login": "admin",
+    "role": "admin",
+    "isAdmin": true,
+    "active": true,
+    "password": "admin123",
+    "pass": "admin123",
+    "pwd": "admin123",
+    "secret": "admin123",
+    "createdAt": "1970-01-01T00:00:00.000Z"
+  }
 ]
