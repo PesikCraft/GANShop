@@ -1,16 +1,16 @@
 {
-  "name": "offline-shop-json-server",
-  "version": "1.2.1",
+  "name": "files-json-shop-server",
+  "version": "1.0.0",
   "private": true,
-  "description": "File-based or Postgres-backed JSON server for offline shop sync",
+  "description": "Simple file-backed JSON server for shop sync",
   "main": "server.js",
+  "type": "commonjs",
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js"
   },
   "dependencies": {
-    "express": "^4.19.2",
-    "pg": "^8.12.0"
+    "express": "^4.19.2"
   },
   "devDependencies": {
     "nodemon": "^3.1.0"
