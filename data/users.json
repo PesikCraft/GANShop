@@ -1,1 +1,14 @@
-[]
+[
+  {
+    "nick": "admin",
+    "login": "admin",
+    "username": "admin",
+    "role": "admin",
+    "isAdmin": true,
+    "admin": true,
+    "password": "admin",
+    "pass": "admin",
+    "pwd": "admin",
+    "updatedAt": 0
+  }
+]
