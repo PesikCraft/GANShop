@@ -1,62 +1,60 @@
 // server/server.js
-// JSON-сервер: файл (data/) или Postgres (DATABASE_URL).
-// Эндпоинты: GET/PUT /api/catalog|orders|bank|users, GET /healthz, POST /api/login (опц.)
-// Новое: защита от «отката» — PUT принимает изменения только с НЕ старой меткой времени (X-Shop-Ts).
+// Файловый JSON-сервер (без БД). Раздаёт client/ и хранит JSON в data/.
+// Эндпоинты: GET/PUT /api/catalog, /api/orders, /api/bank, /api/users (+ /healthz).
+// Запись атомарная, валидация массивов. Защита от старых записей по X-Shop-Ts (409).
 
-const path = require('path');
-const fs = require('fs');
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
 
-const app = express();
 const PORT = process.env.PORT || 7070;
 const BODY_LIMIT = process.env.BODY_LIMIT || '25mb';
 
 const ROOT = path.join(__dirname, '..');
 const CLIENT_DIR = path.join(ROOT, 'client');
-const FS_DATA_DIR = process.env.DATA_DIR || path.join(ROOT, 'data');
+const DATA_DIR = path.join(ROOT, 'data');
 
-const USE_DB = !!process.env.DATABASE_URL;
-let db = null;
+const FILES = {
+  products: path.join(DATA_DIR, 'products.json'),
+  cats:     path.join(DATA_DIR, 'cats.json'),
+  orders:   path.join(DATA_DIR, 'orders.json'),
+  bank:     path.join(DATA_DIR, 'bank.json'),
+  users:    path.join(DATA_DIR, 'users.json'),
+  meta:     path.join(DATA_DIR, '.meta.json') // timestamps
+};
+const META_KEYS = {
+  catalog: 'catalog_ts',
+  orders:  'orders_ts',
+  bank:    'bank_ts',
+  users:   'users_ts'
+};
 
-app.use(express.json({ limit: BODY_LIMIT, strict: true }));
-app.use(express.urlencoded({ limit: BODY_LIMIT, extended: true }));
-app.use(express.static(CLIENT_DIR, { etag: false, lastModified: false, cacheControl: false }));
-
-// ---------- FS utils ----------
-function ensureDirSync(dir) { if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true }); }
-function readJsonSync(filePath, fallback) {
-  try { return JSON.parse(fs.readFileSync(filePath, 'utf8')); }
-  catch (e) { if (fallback !== undefined) return fallback; throw e; }
+// ---------- helpers ----------
+function ensureDirSync(dir){ if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true }); }
+function readJsonSync(file, fallback){
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
+  catch(e){ if (typeof fallback !== 'undefined') return fallback; throw e; }
 }
-function writeFileAtomicSync(filePath, dataString) {
+function writeFileAtomicSync(filePath, dataString){
   const dir = path.dirname(filePath);
   const base = path.basename(filePath);
   const tmp = path.join(dir, '.' + base + '.tmp-' + process.pid + '-' + Date.now());
   const fd = fs.openSync(tmp, 'w');
   try { fs.writeFileSync(fd, dataString, 'utf8'); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
   fs.renameSync(tmp, filePath);
-  let dfd; try { dfd = fs.openSync(dir, 'r'); fs.fsyncSync(dfd); } catch (_) {} finally { if (dfd) fs.closeSync(dfd); }
+  let dfd; try { dfd = fs.openSync(dir, 'r'); fs.fsyncSync(dfd); } catch(_) {} finally { if (dfd) fs.closeSync(dfd); }
 }
-function writeJsonAtomicSync(filePath, obj) {
+function writeJsonAtomicSync(filePath, obj){
   writeFileAtomicSync(filePath, JSON.stringify(obj, null, 2) + '\n');
 }
+function isArray(x){ return Array.isArray(x); }
+function bad(res,msg){ return res.status(400).json({ error: msg || 'Bad Request' }); }
+function getClientTs(req){ return parseInt(req.get('x-shop-ts'), 10) || 0; }
 
-// ---------- Files & Keys ----------
-const FILES = {
-  products: path.join(FS_DATA_DIR, 'products.json'),
-  cats:     path.join(FS_DATA_DIR, 'cats.json'),
-  orders:   path.join(FS_DATA_DIR, 'orders.json'),
-  bank:     path.join(FS_DATA_DIR, 'bank.json'),
-  users:    path.join(FS_DATA_DIR, 'users.json'),
-  meta:     path.join(FS_DATA_DIR, '.meta.json'),
-};
-const KEYS = { products:'products', cats:'cats', orders:'orders', bank:'bank', users:'users' };
-const META_KEYS = { catalog:'catalog_ts', orders:'orders_ts', bank:'bank_ts' };
-
-// ---------- Bootstrap ----------
-function fsBootstrap() {
-  ensureDirSync(FS_DATA_DIR);
-  if (!fs.existsSync(FILES.products)) {
+// ---------- bootstrap ----------
+function bootstrap(){
+  ensureDirSync(DATA_DIR);
+  if (!fs.existsSync(FILES.products)){
     writeJsonAtomicSync(FILES.products, [
       { id: 1, title: 'Demo футболка', price: 1990, cat: 'Одежда' },
       { id: 2, title: 'Demo худи',     price: 3990, cat: 'Одежда' },
@@ -66,234 +64,111 @@ function fsBootstrap() {
   if (!fs.existsSync(FILES.cats))   writeJsonAtomicSync(FILES.cats,   ['Одежда','Аксессуары']);
   if (!fs.existsSync(FILES.orders)) writeJsonAtomicSync(FILES.orders, []);
   if (!fs.existsSync(FILES.bank))   writeJsonAtomicSync(FILES.bank,   []);
-  if (!fs.existsSync(FILES.users))  writeJsonAtomicSync(FILES.users,  []);
+  if (!fs.existsSync(FILES.users))  writeJsonAtomicSync(FILES.users,  []); // важное новье
   if (!fs.existsSync(FILES.meta))   writeJsonAtomicSync(FILES.meta,   {});
 }
-async function dbBootstrap() {
-  await db.init();
-  async function ensure(key, defVal) {
-    const v = await db.get(key, null);
-    if (v === null || typeof v === 'undefined') await db.set(key, defVal);
-  }
-  await ensure(KEYS.products, [
-    { id: 1, title: 'Demo футболка', price: 1990, cat: 'Одежда' },
-    { id: 2, title: 'Demo худи',     price: 3990, cat: 'Одежда' },
-    { id: 3, title: 'Demo кружка',   price:  990, cat: 'Аксессуары' }
-  ]);
-  await ensure(KEYS.cats,   ['Одежда','Аксессуары']);
-  await ensure(KEYS.orders, []);
-  await ensure(KEYS.bank,   []);
-  await ensure(KEYS.users,  []);
-  // meta ts — не обязательно, 0 по умолчанию
+bootstrap();
+
+// meta (timestamps)
+function readMeta(){ return readJsonSync(FILES.meta, {}); }
+function writeMetaPatch(patch){
+  const meta = readMeta();
+  for (const k in patch) if (Object.prototype.hasOwnProperty.call(patch,k)) meta[k]=patch[k];
+  writeJsonAtomicSync(FILES.meta, meta);
 }
+function getTs(name){ return parseInt(readMeta()[name], 10) || 0; }
+function setTs(name, ts){ writeMetaPatch({ [name]: parseInt(ts,10) || Date.now() }); }
 
-// de-dup admin + ensure password
-function ensureAdminInArray(arr) {
-  arr = Array.isArray(arr) ? arr : [];
-  const pwd = process.env.ADMIN_PASSWORD || 'admin';
-  const force = process.env.ADMIN_FORCE_RESET === '1';
-  function uname(u){ return (u && (u.nick||u.login||u.username||u.id||u.name)||'').toString().trim(); }
+// ---------- middlewares ----------
+const app = express();
+app.use(express.json({ limit: BODY_LIMIT, strict: true }));
+app.use(express.urlencoded({ limit: BODY_LIMIT, extended: true }));
+app.use(express.static(CLIENT_DIR, { etag:false, lastModified:false, cacheControl:false }));
 
-  const others = [];
-  const admins = [];
-  for (let i=0;i<arr.length;i++){
-    const u = arr[i] || {};
-    const n = uname(u);
-    if (n && n.toLowerCase() === 'admin') admins.push(u); else others.push(u);
-  }
-
-  let admin = { nick:'admin' };
-  for (let i=0;i<admins.length;i++){
-    const src = admins[i];
-    for (const k in src) if (Object.prototype.hasOwnProperty.call(src,k)) admin[k]=src[k];
-  }
-  admin.nick='admin'; admin.login='admin'; admin.username='admin';
-  admin.role='admin'; admin.isAdmin=true; admin.admin=true;
-  if (force || !admin.password) { admin.password=pwd; admin.pass=pwd; admin.pwd=pwd; }
-  admin.updatedAt = Date.now();
-
-  const next = others.concat([admin]);
-  const changed = JSON.stringify(next) !== JSON.stringify(arr);
-  return { changed, arr: next };
-}
-
-function fsEnsureAdmin() {
-  const users = readJsonSync(FILES.users, []);
-  const { changed, arr } = ensureAdminInArray(users);
-  if (changed) writeJsonAtomicSync(FILES.users, arr);
-}
-async function dbEnsureAdmin() {
-  const users = await db.get(KEYS.users, []);
-  const { changed, arr } = ensureAdminInArray(users);
-  if (changed) await db.set(KEYS.users, arr);
-}
-
-// ---------- META TS helpers ----------
-function fsReadMeta(){ return readJsonSync(FILES.meta, {}); }
-function fsWriteMetaPatch(patch){
-  const cur = fsReadMeta();
-  for (const k in patch) if (Object.prototype.hasOwnProperty.call(patch,k)) cur[k]=patch[k];
-  writeJsonAtomicSync(FILES.meta, cur);
-}
-async function getTs(name){
-  if (USE_DB) {
-    const v = await db.get('meta:'+name, 0);
-    return typeof v === 'number' ? v : parseInt(v, 10) || 0;
-  } else {
-    const m = fsReadMeta();
-    return parseInt(m[name], 10) || 0;
-  }
-}
-async function setTs(name, ts){
-  const v = parseInt(ts, 10) || Date.now();
-  if (USE_DB) await db.set('meta:'+name, v);
-  else fsWriteMetaPatch({ [name]: v });
-}
-
-// ---------- helpers ----------
-function bad(res, msg) { return res.status(400).json({ error: msg || 'Bad Request' }); }
-function isArray(x) { return Array.isArray(x); }
-function getClientTs(req){ return parseInt(req.get('x-shop-ts'), 10) || 0; }
-
-// ---------- Routes ----------
-app.get('/api/catalog', async (_req, res) => {
+// ---------- routes: catalog ----------
+app.get('/api/catalog', (_req,res)=>{
   try {
-    if (USE_DB) {
-      const [cats, products] = await Promise.all([db.get(KEYS.cats, []), db.get(KEYS.products, [])]);
-      return res.json({ cats, products });
-    }
-    res.json({ cats: readJsonSync(FILES.cats, []), products: readJsonSync(FILES.products, []) });
-  } catch (e) { console.error(e); res.status(500).json({ error: 'Internal Server Error' }); }
+    const cats = readJsonSync(FILES.cats, []);
+    const products = readJsonSync(FILES.products, []);
+    res.json({ cats, products });
+  } catch(e){ console.error(e); res.status(500).json({ error:'Internal Server Error' }); }
 });
-app.put('/api/catalog', async (req, res) => {
+app.put('/api/catalog', (req,res)=>{
   try {
     const b = req.body || {};
-    if (!isArray(b.cats) || !isArray(b.products)) return bad(res, 'Both "cats" and "products" must be arrays');
-
-    const clientTs = getClientTs(req);
-    const serverTs = await getTs(META_KEYS.catalog); // 'catalog_ts'
-
-    if (clientTs && serverTs && clientTs < serverTs) {
-      // Старая запись — возвращаем актуальное состояние
-      const currentCats  = USE_DB ? await db.get(KEYS.cats, [])     : readJsonSync(FILES.cats, []);
-      const currentProds = USE_DB ? await db.get(KEYS.products, []) : readJsonSync(FILES.products, []);
-      return res.status(409).json({ stale: true, ts: serverTs, cats: currentCats, products: currentProds });
+    if (!isArray(b.cats) || !isArray(b.products)) return bad(res,'Both "cats" and "products" must be arrays');
+    const clientTs = getClientTs(req), serverTs = getTs(META_KEYS.catalog);
+    if (clientTs && serverTs && clientTs < serverTs){
+      const cats = readJsonSync(FILES.cats, []);
+      const products = readJsonSync(FILES.products, []);
+      return res.status(409).json({ stale:true, ts:serverTs, cats, products });
     }
-
-    if (USE_DB) { await Promise.all([db.set(KEYS.cats, b.cats), db.set(KEYS.products, b.products)]); }
-    else { writeJsonAtomicSync(FILES.cats, b.cats); writeJsonAtomicSync(FILES.products, b.products); }
-
-    await setTs(META_KEYS.catalog, clientTs || Date.now());
-    res.json({ ok: true });
-  } catch (e) { console.error(e); res.status(500).json({ error: 'Internal Server Error' }); }
+    writeJsonAtomicSync(FILES.cats, b.cats);
+    writeJsonAtomicSync(FILES.products, b.products);
+    setTs(META_KEYS.catalog, clientTs || Date.now());
+    res.json({ ok:true });
+  } catch(e){ console.error(e); res.status(500).json({ error:'Internal Server Error' }); }
 });
 
-app.get('/api/orders', async (_req, res) => {
-  try {
-    const orders = USE_DB ? await db.get(KEYS.orders, []) : readJsonSync(FILES.orders, []);
-    res.json({ orders });
-  } catch (e) { console.error(e); res.status(500).json({ error: 'Internal Server Error' }); }
+// ---------- routes: orders ----------
+app.get('/api/orders', (_req,res)=>{
+  try { res.json({ orders: readJsonSync(FILES.orders, []) }); }
+  catch(e){ console.error(e); res.status(500).json({ error:'Internal Server Error' }); }
 });
-app.put('/api/orders', async (req, res) => {
+app.put('/api/orders', (req,res)=>{
   try {
-    const b = req.body || {};
-    if (!isArray(b.orders)) return bad(res, '"orders" must be an array');
-
-    const clientTs = getClientTs(req);
-    const serverTs = await getTs(META_KEYS.orders);
-    if (clientTs && serverTs && clientTs < serverTs) {
-      const current = USE_DB ? await db.get(KEYS.orders, []) : readJsonSync(FILES.orders, []);
-      return res.status(409).json({ stale: true, ts: serverTs, orders: current });
+    const b=req.body||{};
+    if(!isArray(b.orders)) return bad(res,'"orders" must be an array');
+    const clientTs = getClientTs(req), serverTs = getTs(META_KEYS.orders);
+    if (clientTs && serverTs && clientTs < serverTs){
+      return res.status(409).json({ stale:true, ts:serverTs, orders: readJsonSync(FILES.orders, []) });
     }
-
-    if (USE_DB) await db.set(KEYS.orders, b.orders);
-    else writeJsonAtomicSync(FILES.orders, b.orders);
-
-    await setTs(META_KEYS.orders, clientTs || Date.now());
-    res.json({ ok: true });
-  } catch (e) { console.error(e); res.status(500).json({ error: 'Internal Server Error' }); }
+    writeJsonAtomicSync(FILES.orders, b.orders);
+    setTs(META_KEYS.orders, clientTs || Date.now());
+    res.json({ ok:true });
+  } catch(e){ console.error(e); res.status(500).json({ error:'Internal Server Error' }); }
 });
 
-app.get('/api/bank', async (_req, res) => {
-  try {
-    const log = USE_DB ? await db.get(KEYS.bank, []) : readJsonSync(FILES.bank, []);
-    res.json({ log });
-  } catch (e) { console.error(e); res.status(500).json({ error: 'Internal Server Error' }); }
+// ---------- routes: bank ----------
+app.get('/api/bank', (_req,res)=>{
+  try { res.json({ log: readJsonSync(FILES.bank, []) }); }
+  catch(e){ console.error(e); res.status(500).json({ error:'Internal Server Error' }); }
 });
-app.put('/api/bank', async (req, res) => {
+app.put('/api/bank', (req,res)=>{
   try {
-    const b = req.body || {};
-    if (!isArray(b.log)) return bad(res, '"log" must be an array');
-
-    const clientTs = getClientTs(req);
-    const serverTs = await getTs(META_KEYS.bank);
-    if (clientTs && serverTs && clientTs < serverTs) {
-      const current = USE_DB ? await db.get(KEYS.bank, []) : readJsonSync(FILES.bank, []);
-      return res.status(409).json({ stale: true, ts: serverTs, log: current });
+    const b=req.body||{};
+    if(!isArray(b.log)) return bad(res,'"log" must be an array');
+    const clientTs = getClientTs(req), serverTs = getTs(META_KEYS.bank);
+    if (clientTs && serverTs && clientTs < serverTs){
+      return res.status(409).json({ stale:true, ts:serverTs, log: readJsonSync(FILES.bank, []) });
     }
-
-    if (USE_DB) await db.set(KEYS.bank, b.log);
-    else writeJsonAtomicSync(FILES.bank, b.log);
-
-    await setTs(META_KEYS.bank, clientTs || Date.now());
-    res.json({ ok: true });
-  } catch (e) { console.error(e); res.status(500).json({ error: 'Internal Server Error' }); }
+    writeJsonAtomicSync(FILES.bank, b.log);
+    setTs(META_KEYS.bank, clientTs || Date.now());
+    res.json({ ok:true });
+  } catch(e){ console.error(e); res.status(500).json({ error:'Internal Server Error' }); }
 });
 
-app.get('/api/users', async (_req, res) => {
-  try {
-    const users = USE_DB ? await db.get(KEYS.users, []) : readJsonSync(FILES.users, []);
-    res.json({ users });
-  } catch (e) { console.error(e); res.status(500).json({ error: 'Internal Server Error' }); }
+// ---------- routes: users (новое для кросс-девайса) ----------
+app.get('/api/users', (_req,res)=>{
+  try { res.json({ users: readJsonSync(FILES.users, []) }); }
+  catch(e){ console.error(e); res.status(500).json({ error:'Internal Server Error' }); }
 });
-app.put('/api/users', async (req, res) => {
+app.put('/api/users', (req,res)=>{
   try {
-    const b = req.body || {};
-    if (!isArray(b.users)) return bad(res, '"users" must be an array');
-    const { arr } = ensureAdminInArray(b.users);
-    if (USE_DB) await db.set(KEYS.users, arr);
-    else writeJsonAtomicSync(FILES.users, arr);
-    res.json({ ok: true });
-  } catch (e) { console.error(e); res.status(500).json({ error: 'Internal Server Error' }); }
-});
-
-// (опционально) проверка пароля
-app.post('/api/login', async (req,res) => {
-  try {
-    const b = req.body || {};
-    const nick = (b.nick || b.login || b.username || '').toString().trim();
-    const pass = (b.password || b.pass || b.pwd || '').toString();
-    if (!nick) return bad(res,'nick required');
-    const users = USE_DB ? await db.get(KEYS.users, []) : readJsonSync(FILES.users, []);
-    function uname(u){ return (u && (u.nick||u.login||u.username||u.id||u.name)||'').toString().trim(); }
-    let user = null;
-    for (let i=0;i<users.length;i++){ const u=users[i]||{}; if (uname(u)===nick){ user=u; break; } }
-    let ok=false;
-    if (user){
-      if (!pass && nick==='admin') ok=true;
-      else if (user.password && String(user.password)===pass) ok=true;
-      else if (user.pass && String(user.pass)===pass) ok=true;
-      else if (user.pwd  && String(user.pwd)===pass) ok=true;
+    const b=req.body||{};
+    if(!isArray(b.users)) return bad(res,'"users" must be an array');
+    const clientTs = getClientTs(req), serverTs = getTs(META_KEYS.users);
+    if (clientTs && serverTs && clientTs < serverTs){
+      return res.status(409).json({ stale:true, ts:serverTs, users: readJsonSync(FILES.users, []) });
     }
-    res.json({ ok, admin: ok && (nick==='admin' || (user && (user.role==='admin'||user.isAdmin===true||user.admin===true))) || false, user: ok?user:null });
-  } catch (e) { console.error(e); res.status(500).json({ error:'Internal Server Error' }); }
+    writeJsonAtomicSync(FILES.users, b.users);
+    setTs(META_KEYS.users, clientTs || Date.now());
+    res.json({ ok:true });
+  } catch(e){ console.error(e); res.status(500).json({ error:'Internal Server Error' }); }
 });
 
-// health check
-app.get('/healthz', async (_req,res) => {
-  try { if (USE_DB) await (db.get ? db.get('health', []) : Promise.resolve([])); res.status(200).json({ ok:true, mode: USE_DB?'postgres':'files' }); }
-  catch (e) { res.status(500).json({ ok:false, error: String(e&&e.message||e) }); }
-});
+// ---------- health ----------
+app.get('/healthz', (_req,res)=>{ res.json({ ok:true, mode:'files' }); });
 
-// ---------- Start ----------
-(async function start() {
-  if (USE_DB) {
-    db = require('./db');
-    await dbBootstrap();
-    await dbEnsureAdmin();
-  } else {
-    fsBootstrap();
-    fsEnsureAdmin();
-  }
-  app.listen(PORT, () => console.log('JSON server on http://localhost:' + PORT + ' (mode=' + (USE_DB ? 'postgres' : 'files') + ')'));
-})();
+// ---------- start ----------
+app.listen(PORT, ()=>{ console.log('JSON file server on http://localhost:'+PORT); });
