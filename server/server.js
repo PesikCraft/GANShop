@@ -80,6 +80,7 @@ async function dbBootstrap() {
 }
 function ensureAdminInArray(arr) {
   const pwd = process.env.ADMIN_PASSWORD || 'admin';
+  const force = process.env.ADMIN_FORCE_RESET === '1'; // <— новый флаг
   let changed = false, found = false;
   for (let i = 0; i < arr.length; i++) {
     const u = arr[i] || {};
@@ -87,7 +88,8 @@ function ensureAdminInArray(arr) {
     if (name === 'admin') {
       found = true;
       if (u.role !== 'admin') { u.role = 'admin'; changed = true; }
-      if (!u.password) { u.password = pwd; changed = true; }
+      if (force) { u.password = pwd; changed = true; }
+      else if (!u.password) { u.password = pwd; changed = true; }
       arr[i] = u;
       break;
     }
@@ -95,6 +97,7 @@ function ensureAdminInArray(arr) {
   if (!found) { arr.push({ nick: 'admin', password: pwd, role: 'admin', createdAt: Date.now() }); changed = true; }
   return { changed, arr };
 }
+
 function fsEnsureAdmin() {
   const users = readJsonSync(FILES.users, []);
   const { changed, arr } = ensureAdminInArray(Array.isArray(users) ? users : []);
