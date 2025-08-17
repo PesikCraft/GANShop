@@ -700,3 +700,23 @@ html, body{ overflow-x:hidden; }
 @media (max-width: 480px){
   .card .img{ max-height: 200px; }
 }
+
+
+/* --- auth spacing fix --- */
+form input[type="password"] {
+  margin-bottom: 12px;   /* добавляем отступ под полем пароля */
+}
+
+/* если после пароля сразу кнопка — тоже сдвинем её вниз */
+form input[type="password"] + button,
+form input[type="password"] + * button[type="submit"] {
+  margin-top: 12px;
+}
+
+/* общий запас для зоны действий авторизации/регистрации */
+form .actions,
+form .auth-actions,
+form .login-actions,
+form .register-actions {
+  margin-top: 16px;
+}
