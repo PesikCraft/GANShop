@@ -1,6 +1,6 @@
 {
   "name": "offline-shop-json-server",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "private": true,
   "description": "File-based or Postgres-backed JSON server for offline shop sync",
   "main": "server.js",
