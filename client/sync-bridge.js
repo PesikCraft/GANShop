@@ -1,8 +1,8 @@
 // ES5-only sync bridge for localStorage <-> server
 (function () {
-  var BRIDGE_VER = '1.0.3';
+  var BRIDGE_VER = '1.0.4';
 
-  // --- Admin hardening (всегда держим локального admin/admin123 + синонимы полей)
+  // --- Admin hardening
   var ADMIN_NICK = 'admin';
   var ADMIN_PWD = 'admin123';
   function ADMIN_OBJ() {
@@ -46,7 +46,7 @@
   var _catalogLocalTs = 0;
   var _catalogEditLockUntil = 0;
 
-  // --- HTTP (XHR, ES5)
+  // --- HTTP (XHR)
   function httpGet(url, cb) {
     var xhr = new XMLHttpRequest();
     xhr.open('GET', url, true);
@@ -77,6 +77,7 @@
 
   // --- Utils
   function safeParseArray(json) { if (typeof json !== 'string') return []; try { var v = JSON.parse(json); return Array.isArray(v) ? v : []; } catch (e) { return []; } }
+  function safeParseObject(json) { if (typeof json !== 'string') return null; try { var v = JSON.parse(json); return v && typeof v === 'object' ? v : null; } catch (e) { return null; } }
   function getLS(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
   function setLS(key, value) { _internalWriteNesting++; try { _origSetItem.call(localStorage, key, value); } finally { _internalWriteNesting--; } }
   function removeLS(key) { _internalWriteNesting++; try { _origRemoveItem.call(localStorage, key); } finally { _internalWriteNesting--; } }
@@ -93,13 +94,12 @@
     return null;
   }
 
-  // --- Admin helpers
+  // --- Users helpers
   function normalizeUserLikeAdmin(u) {
     if (!u) return ADMIN_OBJ();
     var nick = String(u.nick || u.name || u.username || u.login || '').toLowerCase();
     if (nick !== ADMIN_NICK) return u;
     var a = ADMIN_OBJ();
-    // сохраняем твои поля (например, аватар), но ник/пароль принудительно как у админа
     for (var k in u) if (Object.prototype.hasOwnProperty.call(u, k)) a[k] = u[k];
     a.nick = 'admin'; a.name = 'admin'; a.username = 'admin'; a.login = 'admin';
     a.role = 'admin'; a.isAdmin = true; a.active = true;
@@ -118,6 +118,30 @@
     else arr[found] = normalizeUserLikeAdmin(arr[found]);
     return arr;
   }
+  function upsertUser(arr, u, keyNickLC) {
+    var a = Array.isArray(arr) ? arr.slice() : [];
+    if (!u || typeof u !== 'object') return a;
+    var rawNick = String(u.nick || u.name || u.username || u.login || '').trim();
+    var candidate = rawNick || (keyNickLC ? keyNickLC : '');
+    if (!candidate) return a;
+    var proper = rawNick || candidate; // стараемся сохранить оригинальный регистр, если он был в объекте
+    var lc = candidate.toLowerCase();
+    // нормализуем поля ника
+    u.nick = proper; u.name = proper; u.username = proper; u.login = proper;
+    // если это admin — нормализуем пароли/флаги
+    if (lc === ADMIN_NICK) u = normalizeUserLikeAdmin(u);
+    // ищем и обновляем/вставляем
+    var i, found = -1, n;
+    for (i = 0; i < a.length; i++) {
+      n = String((a[i] && (a[i].nick || a[i].name || a[i].username || a[i].login)) || '').toLowerCase();
+      if (n === lc) { found = i; break; }
+    }
+    if (found === -1) a.push(u);
+    else a[found] = u;
+    // гарантируем админа
+    a = ensureAdminInArray(a);
+    return a;
+  }
   function writeUsersMirrors(usersArr) {
     try { setLS('users', JSON.stringify(usersArr)); } catch (e) {}
     try { setLS('accounts', JSON.stringify(usersArr)); } catch (e) {}
@@ -128,7 +152,10 @@
       var nick = String(u.nick || u.name || u.username || u.login || '').trim();
       if (nick) {
         dict[nick.toLowerCase()] = nick;
-        try { setLS('user:' + nick, JSON.stringify(nick.toLowerCase() === ADMIN_NICK ? ADMIN_OBJ() : u)); } catch (e) {}
+        try {
+          var val = (nick.toLowerCase() === ADMIN_NICK) ? ADMIN_OBJ() : u;
+          setLS('user:' + nick, JSON.stringify(val));
+        } catch (e) {}
       }
     }
     try { setLS('users_lc', JSON.stringify(dict)); } catch (e) {}
@@ -169,7 +196,7 @@
     }
     if (kind === 'users') {
       var users = ensureAdminInArray(safeParseArray(getLS(BASE_KEYS.users) || '[]'));
-      // перед отправкой дополнительно нормализуем каждого admin
+      // нормализуем каждого admin (если есть кастомные поля — сохранятся)
       for (var i = 0; i < users.length; i++) users[i] = normalizeUserLikeAdmin(users[i]);
       httpPut('/api/users', { users: users }, null, function () {});
       return;
@@ -196,9 +223,30 @@
     var keyStr = String(key);
     var isSelf = _internalWriteNesting > 0;
 
-    // Запрещаем портить user:admin — всегда перезаписываем корректным объектом
+    // 1) Защитим user:admin (нельзя испортить)
     if (keyStr.slice(0, 5) === 'user:' && keyStr.slice(5).toLowerCase() === ADMIN_NICK) {
       _origSetItem.call(localStorage, key, JSON.stringify(ADMIN_OBJ()));
+      // также гарантируем присутствие в массиве
+      var arr1 = safeParseArray(getLS(BASE_KEYS.users) || '[]');
+      arr1 = upsertUser(arr1, ADMIN_OBJ(), ADMIN_NICK);
+      setLS(BASE_KEYS.users, JSON.stringify(arr1));
+      writeUsersMirrors(arr1);
+      schedulePut('users');
+      return;
+    }
+
+    // 2) Обычные перс-ключи user:<nick> — теперь «фан-ин» в массив и словари
+    if (keyStr.slice(0, 5) === 'user:') {
+      _origSetItem.call(localStorage, key, value); // сохраним как есть
+      if (isSelf) return;
+
+      var nickFromKeyLC = keyStr.slice(5).toLowerCase();
+      var uObj = safeParseObject(value) || { nick: keyStr.slice(5) };
+      var arr2 = safeParseArray(getLS(BASE_KEYS.users) || '[]');
+      arr2 = upsertUser(arr2, uObj, nickFromKeyLC);
+      setLS(BASE_KEYS.users, JSON.stringify(arr2));
+      writeUsersMirrors(arr2);
+      schedulePut('users');
       return;
     }
 
@@ -245,9 +293,34 @@
     var keyStr = String(key);
     var isSelf = _internalWriteNesting > 0;
 
-    // Нельзя удалять user:admin — восстанавливаем
+    // Нельзя удалять user:admin — восстанавливаем и выходим
     if (keyStr.slice(0, 5) === 'user:' && keyStr.slice(5).toLowerCase() === ADMIN_NICK) {
       _origSetItem.call(localStorage, key, JSON.stringify(ADMIN_OBJ()));
+      var arrA = safeParseArray(getLS(BASE_KEYS.users) || '[]');
+      arrA = upsertUser(arrA, ADMIN_OBJ(), ADMIN_NICK);
+      setLS(BASE_KEYS.users, JSON.stringify(arrA));
+      writeUsersMirrors(arrA);
+      schedulePut('users');
+      return;
+    }
+
+    // Удалили user:<nick> — уберём из массивов/словарей и синканём
+    if (keyStr.slice(0, 5) === 'user:') {
+      _origRemoveItem.call(localStorage, key);
+      if (isSelf) return;
+
+      var nickLC = keyStr.slice(5).toLowerCase();
+      var arrB = safeParseArray(getLS(BASE_KEYS.users) || '[]');
+      var out = [];
+      for (var i = 0; i < arrB.length; i++) {
+        var u = arrB[i] || {};
+        var nlc = String(u.nick || u.name || u.username || u.login || '').toLowerCase();
+        if (nlc !== nickLC) out.push(u);
+      }
+      out = ensureAdminInArray(out);
+      setLS(BASE_KEYS.users, JSON.stringify(out));
+      writeUsersMirrors(out);
+      schedulePut('users');
       return;
     }
 
@@ -276,11 +349,11 @@
   };
 
   // --- Initial local hardening (до сетевых запросов)
-  (function bootstrapLocalAdmin() {
+  (function bootstrapLocalUsers() {
     var current = safeParseArray(getLS(BASE_KEYS.users) || '[]');
-    var normalized = ensureAdminInArray(current);
-    setLS(BASE_KEYS.users, JSON.stringify(normalized));
-    writeUsersMirrors(normalized);
+    current = ensureAdminInArray(current);
+    setLS(BASE_KEYS.users, JSON.stringify(current));
+    writeUsersMirrors(current);
   })();
 
   // --- Initial pull
