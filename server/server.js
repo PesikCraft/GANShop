@@ -2,6 +2,7 @@
 // Файловый JSON-сервер (без БД). Раздаёт client/ и хранит JSON в data/.
 // Эндпоинты: GET/PUT /api/catalog, /api/orders, /api/bank, /api/users (+ /healthz).
 // Запись атомарная, валидация массивов. Защита от старых записей по X-Shop-Ts (409).
+// ГАРАНТИЯ admin: сервер создаёт/оставляет пользователя admin (роль admin, пароль по умолчанию 'admin').
 
 const express = require('express');
 const fs = require('fs');
@@ -51,9 +52,57 @@ function isArray(x){ return Array.isArray(x); }
 function bad(res,msg){ return res.status(400).json({ error: msg || 'Bad Request' }); }
 function getClientTs(req){ return parseInt(req.get('x-shop-ts'), 10) || 0; }
 
+// ---------- admin ensure ----------
+function uname(u){ return (u && (u.nick||u.login||u.username||u.id||u.name)||'').toString().trim(); }
+
+/** Возвращает массив пользователей, где гарантированно есть единственный admin.
+ *  - Если admin уже есть — не ломаем его поля, только дополняем недостающие.
+ *  - Если пароля нет — ставим process.env.ADMIN_PASSWORD или 'admin'.
+ *  - Если ADMIN_FORCE_RESET=1 — перезаписываем пароль admin.
+ */
+function ensureAdminInArray(arr){
+  arr = Array.isArray(arr) ? arr.slice() : [];
+  const pwd = process.env.ADMIN_PASSWORD || 'admin';
+  const force = process.env.ADMIN_FORCE_RESET === '1';
+
+  const keep = [];
+  const admins = [];
+  for (let i=0;i<arr.length;i++){
+    const u = arr[i] || {};
+    const n = uname(u);
+    if (n && n.toLowerCase() === 'admin') admins.push(u);
+    else keep.push(u);
+  }
+
+  // Сливаем все admin-объекты в один
+  const admin = {};
+  for (let i=0;i<admins.length;i++){
+    const src = admins[i] || {};
+    for (const k in src) if (Object.prototype.hasOwnProperty.call(src,k)) admin[k]=src[k];
+  }
+  // Базовые поля admin
+  admin.nick='admin';
+  admin.login='admin';
+  admin.username='admin';
+  admin.role='admin';
+  admin.isAdmin=true;
+  admin.admin=true;
+
+  if (force || !(admin.password || admin.pass || admin.pwd)) {
+    admin.password=pwd; admin.pass=pwd; admin.pwd=pwd;
+  }
+
+  admin.updatedAt = Date.now();
+
+  const next = keep.concat([admin]);
+  const changed = JSON.stringify(next) !== JSON.stringify(arr);
+  return { changed, arr: next };
+}
+
 // ---------- bootstrap ----------
 function bootstrap(){
   ensureDirSync(DATA_DIR);
+
   if (!fs.existsSync(FILES.products)){
     writeJsonAtomicSync(FILES.products, [
       { id: 1, title: 'Demo футболка', price: 1990, cat: 'Одежда' },
@@ -64,8 +113,13 @@ function bootstrap(){
   if (!fs.existsSync(FILES.cats))   writeJsonAtomicSync(FILES.cats,   ['Одежда','Аксессуары']);
   if (!fs.existsSync(FILES.orders)) writeJsonAtomicSync(FILES.orders, []);
   if (!fs.existsSync(FILES.bank))   writeJsonAtomicSync(FILES.bank,   []);
-  if (!fs.existsSync(FILES.users))  writeJsonAtomicSync(FILES.users,  []); // важное новье
+  if (!fs.existsSync(FILES.users))  writeJsonAtomicSync(FILES.users,  []); // создадим файл, если нет
   if (!fs.existsSync(FILES.meta))   writeJsonAtomicSync(FILES.meta,   {});
+
+  // Гарантируем, что admin есть даже если файл уже существовал
+  const users = readJsonSync(FILES.users, []);
+  const { changed, arr } = ensureAdminInArray(users);
+  if (changed) writeJsonAtomicSync(FILES.users, arr);
 }
 bootstrap();
 
@@ -148,20 +202,31 @@ app.put('/api/bank', (req,res)=>{
   } catch(e){ console.error(e); res.status(500).json({ error:'Internal Server Error' }); }
 });
 
-// ---------- routes: users (новое для кросс-девайса) ----------
+// ---------- routes: users (кросс-девайс логины) ----------
 app.get('/api/users', (_req,res)=>{
-  try { res.json({ users: readJsonSync(FILES.users, []) }); }
-  catch(e){ console.error(e); res.status(500).json({ error:'Internal Server Error' }); }
+  try {
+    // доп. гарантия: даже если кто-то удалил admin — восстановим на лету
+    const users = readJsonSync(FILES.users, []);
+    const fixed = ensureAdminInArray(users);
+    if (fixed.changed) writeJsonAtomicSync(FILES.users, fixed.arr);
+    res.json({ users: fixed.arr });
+  } catch(e){ console.error(e); res.status(500).json({ error:'Internal Server Error' }); }
 });
 app.put('/api/users', (req,res)=>{
   try {
     const b=req.body||{};
     if(!isArray(b.users)) return bad(res,'"users" must be an array');
+    // не позволяем потерять admin — добавим/обновим перед сохранением
+    const fixed = ensureAdminInArray(b.users);
+
     const clientTs = getClientTs(req), serverTs = getTs(META_KEYS.users);
     if (clientTs && serverTs && clientTs < serverTs){
-      return res.status(409).json({ stale:true, ts:serverTs, users: readJsonSync(FILES.users, []) });
+      const current = readJsonSync(FILES.users, []);
+      const fixedCur = ensureAdminInArray(current).arr;
+      return res.status(409).json({ stale:true, ts:serverTs, users: fixedCur });
     }
-    writeJsonAtomicSync(FILES.users, b.users);
+
+    writeJsonAtomicSync(FILES.users, fixed.arr);
     setTs(META_KEYS.users, clientTs || Date.now());
     res.json({ ok:true });
   } catch(e){ console.error(e); res.status(500).json({ error:'Internal Server Error' }); }
