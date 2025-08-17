@@ -1,11 +1,13 @@
-/* sync-bridge.js v2.7 (ES5)
- * - Для catalog отправляет метку времени (X-Shop-Ts) = момент последнего ЛОКАЛЬНОГО изменения.
- * - Сервер отклонит старые записи (409). В таком случае мост подтянет актуальные данные.
- * - Сохраняет метку в LS: sb_cat_last_local_change
+/* sync-bridge v2.8 (ES5)
+ * Надёжная синхронизация каталога/заказов/банка/пользователей без правок app.js.
+ * - Edit-lock каталога: 60s после лок. правок pull не перетирает их.
+ * - X-Shop-Ts + обработка 409 — защита от «старых» записей.
+ * - Зеркала ключей, пересчёт категорий, без переупорядочивания продуктов.
  */
 (function(){
   if (!window || !window.localStorage) return;
 
+  // ---- КЛЮЧИ ----
   var KEY_PRODUCTS='shop_catalog';
   var KEY_CATS='shop_cats';
   var KEY_ORDERS='shop_orders';
@@ -19,19 +21,29 @@
   var LOGIN_NICK_KEYS=['current_user','auth_user','user','nick','username','login'];
   var LOGIN_PASS_KEYS=['password','auth_pass','pass','pwd'];
 
-  var PULL_INTERVAL_MS=5000, PUT_DEBOUNCE_MS=300, WATCH_INTERVAL_MS=400, DIRTY_HOLD_MS=5000;
+  // ---- НАСТРОЙКИ ----
+  var PULL_INTERVAL_MS=5000;
+  var PUT_DEBOUNCE_MS=300;
+  var WATCH_INTERVAL_MS=400;
+  var DIRTY_HOLD_MS=5000;
 
+  // Сколько держать лок после правки каталога (чтобы pull не откатывал)
+  var EDIT_LOCK_MS = 60000; // 60s
+  var LS_TS_KEY = 'sb_cat_last_local_change';
+  var LS_LOCK_UNTIL = 'sb_cat_edit_lock_until';
+
+  // ---- УТИЛИТЫ ----
+  function now(){ return Date.now(); }
   function parseJson(s){ try{ return JSON.parse(s); }catch(e){ return null; } }
   function parseArr(s){ var v=parseJson(s); return Array.isArray(v)?v:[]; }
   function j(v){ try{ return JSON.stringify(v) }catch(e){ return '[]' } }
   function same(a,b){ return j(a)===j(b); }
   function uname(u){ return (u && (u.nick||u.login||u.username||u.id||u.name)||'').toString().trim(); }
-  function now(){ return Date.now(); }
 
   function req(method,url,body,headers){
     if (window.fetch){
-      var h = {'Content-Type':'application/json'};
-      if (headers){ for (var k in headers){ if (Object.prototype.hasOwnProperty.call(headers,k)) h[k]=headers[k]; } }
+      var h={'Content-Type':'application/json'};
+      if (headers){ for (var k in headers) if (Object.prototype.hasOwnProperty.call(headers,k)) h[k]=headers[k]; }
       var o={method:method,headers:h};
       if (body) o.body=JSON.stringify(body);
       return fetch(url,o).then(function(r){
@@ -41,11 +53,11 @@
     return new Promise(function(resolve){
       var x=new XMLHttpRequest(); x.open(method,url,true);
       x.setRequestHeader('Content-Type','application/json');
-      if (headers){ for (var k in headers){ if (Object.prototype.hasOwnProperty.call(headers,k)) x.setRequestHeader(k, headers[k]); } }
+      if (headers){ for (var k in headers) if (Object.prototype.hasOwnProperty.call(headers,k)) x.setRequestHeader(k, headers[k]); }
       x.onreadystatechange=function(){
-        if(x.readyState===4){
+        if (x.readyState===4){
           var data={}; try{ data=JSON.parse(x.responseText||'{}'); }catch(_){}
-          resolve({ ok: x.status>=200&&x.status<300, status:x.status, data:data });
+          resolve({ ok:x.status>=200&&x.status<300, status:x.status, data:data });
         }
       };
       x.onerror=function(){ resolve({ ok:false, status:0, data:{} }); };
@@ -53,16 +65,17 @@
     });
   }
 
-  var silent={};
+  // ---- Безрекурсивные setItem/removeItem ----
+  var mute={};
   var _set=localStorage.setItem.bind(localStorage);
   var _rem=localStorage.removeItem.bind(localStorage);
-  function setSilent(k,v){ silent[k]=v?1:0; }
-  function isSilent(k){ return !!silent[k]; }
-  function setLS(k,v){ setSilent(k,true); try{ _set(k,v); }catch(_){ } setSilent(k,false); }
-  function remLS(k){ setSilent(k,true); try{ _rem(k); }catch(_){ } setSilent(k,false); }
+  function muteKey(k,v){ mute[k]=v?1:0; }
+  function isMuted(k){ return !!mute[k]; }
+  function setLS(k,v){ muteKey(k,true); try{ _set(k,v); }catch(_){ } muteKey(k,false); }
+  function remLS(k){ muteKey(k,true); try{ _rem(k); }catch(_){ } muteKey(k,false); }
 
   function keysByPrefix(prefix){
-    var r=[]; try{ for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); if(k&&k.indexOf(prefix)===0) r.push(k); } }catch(_){}
+    var r=[]; try{ for (var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); if (k && k.indexOf(prefix)===0) r.push(k); } }catch(_){}
     return r;
   }
   function isOrdersSyn(k){ if(!k) return false; if(SYN_ORDERS_STATIC.indexOf(k)!==-1) return true; return k.indexOf('shop_orders_')===0; }
@@ -71,14 +84,14 @@
 
   function recomputeCats(products){
     var cats=[], i, p, c;
-    for(i=0;i<products.length;i++){
-      p=products[i]||{};
-      c=p.cat||p.category||p.categoryId||p.catId;
+    for (i=0;i<products.length;i++){
+      p=products[i]||{}; c=p.cat||p.category||p.categoryId||p.catId;
       if (c && cats.indexOf(c)===-1) cats.push(c);
     }
     return cats;
   }
 
+  // ---- USERS зеркала (для логина) ----
   function mirrorUsers(usersArr){
     usersArr = Array.isArray(usersArr) ? usersArr : [];
     var dict={}, dictLC={}, names=[], i, u, name;
@@ -100,22 +113,48 @@
     }
   }
 
+  // ---- ORDERS/CATALOG зеркала ----
   function mirrorFromPrimary(){
+    // orders
     var ordStr=localStorage.getItem(KEY_ORDERS)||'[]';
-    setLS('my_orders',ordStr); var op=keysByPrefix('shop_orders_'); for (var i=0;i<op.length;i++) setLS(op[i],ordStr);
+    setLS('my_orders',ordStr);
+    var op=keysByPrefix('shop_orders_'); for (var i=0;i<op.length;i++) setLS(op[i],ordStr);
+    // catalog (без изменения порядка!)
     var prodStr=localStorage.getItem(KEY_PRODUCTS)||'[]';
     setLS('products',prodStr); setLS('goods',prodStr); setLS('catalog',prodStr);
     var cp=keysByPrefix('shop_catalog_'); for (i=0;i<cp.length;i++) setLS(cp[i],prodStr);
-    var usersArr=parseArr(localStorage.getItem(KEY_USERS)||'[]');
-    mirrorUsers(usersArr);
+    // users
+    mirrorUsers(parseArr(localStorage.getItem(KEY_USERS)||'[]'));
   }
 
+  function copyToPrimaryIfSynonym(key){
+    var v=localStorage.getItem(key);
+    if (isCatalogSyn(key)) { setLocalProducts(parseArr(v||'[]')); }
+    if (isOrdersSyn(key)) setLS(KEY_ORDERS, v||'[]');
+    if (isUsersSyn(key))  setLS(KEY_USERS, v||'[]');
+  }
+
+  // ---- Каталог: локальные помощники ----
+  function getLocalProducts(){ return parseArr(localStorage.getItem(KEY_PRODUCTS)); }
+  function setLocalProducts(arr){
+    setLS(KEY_PRODUCTS, j(arr||[]));
+    var ts = now();
+    setLS(LS_TS_KEY, String(ts));
+    setLS(LS_LOCK_UNTIL, String(ts + EDIT_LOCK_MS)); // включаем лок
+    // пересчёт категорий синхронно
+    setLS(KEY_CATS, j(recomputeCats(arr||[])));
+    // зеркала
+    mirrorFromPrimary();
+  }
+  function isEditLocked(){
+    var until = parseInt(localStorage.getItem(LS_LOCK_UNTIL)||'0',10) || 0;
+    return until > now();
+  }
+
+  // ---- PUSH ----
   var timers={catalog:null,orders:null,bank:null,users:null};
   var dirtyUntil={catalog:0,orders:0,bank:0,users:0};
   function markDirty(group){ dirtyUntil[group]=now()+DIRTY_HOLD_MS; }
-
-  function getLocalProducts(){ return parseArr(localStorage.getItem(KEY_PRODUCTS)); }
-  function setLocalProducts(arr){ setLS(KEY_PRODUCTS, j(arr||[])); setLS('sb_cat_last_local_change', String(now())); }
 
   function schedulePush(group){
     if (timers[group]){ clearTimeout(timers[group]); timers[group]=null; }
@@ -124,13 +163,13 @@
       if (group==='catalog'){
         var products=getLocalProducts();
         var cats=recomputeCats(products);
-        setLS(KEY_CATS, j(cats));
-        var ts = parseInt(localStorage.getItem('sb_cat_last_local_change')||'0',10) || now();
+        var ts = parseInt(localStorage.getItem(LS_TS_KEY)||'0',10) || now();
         req('PUT','/api/catalog',{products:products,cats:cats},{'X-Shop-Ts': String(ts)}).then(function(r){
           if (!r.ok && r.status===409 && r.data){
-            // Сервер отверг: берём актуальное и кладём локально
+            // Сервер считает наш апдейт старым → подтягиваем актуальное
             var svProds = Array.isArray(r.data.products)?r.data.products:[];
             var svCats  = Array.isArray(r.data.cats)?r.data.cats:recomputeCats(svProds);
+            // Не ломаем порядок: берём как есть
             setLS(KEY_PRODUCTS, j(svProds));
             setLS(KEY_CATS, j(svCats));
             mirrorFromPrimary();
@@ -150,26 +189,21 @@
     }, PUT_DEBOUNCE_MS);
   }
 
-  function copyToPrimaryIfSynonym(key){
-    var v=localStorage.getItem(key);
-    if (isCatalogSyn(key)) { setLocalProducts(parseArr(v||'[]')); }
-    if (isOrdersSyn(key)) setLS(KEY_ORDERS, v||'[]');
-    if (isUsersSyn(key))  setLS(KEY_USERS, v||'[]');
-  }
-
+  // ---- PATCH Storage ----
   localStorage.setItem=function(key,value){
     var r; try{ r=_set(key,value); }catch(_){}
-    if (!isSilent(key)){
+    if (!isMuted(key)){
       if (isCatalogSyn(key) || isOrdersSyn(key) || isUsersSyn(key)) copyToPrimaryIfSynonym(key);
       if (key===KEY_PRODUCTS || key===KEY_CATS || isCatalogSyn(key)) schedulePush('catalog');
       else if (key===KEY_ORDERS || isOrdersSyn(key)) schedulePush('orders');
       else if (key===KEY_BANK) schedulePush('bank');
       else if (key===KEY_USERS || isUsersSyn(key)) schedulePush('users');
 
+      // попытка аутентификации (для админа) — без влияния на каталог
       if (LOGIN_NICK_KEYS.indexOf(key)!==-1 || LOGIN_PASS_KEYS.indexOf(key)!==-1){
         var nick=null, pass=null, i, nv, pv, pj;
         for(i=0;i<LOGIN_NICK_KEYS.length;i++){ nv=localStorage.getItem(LOGIN_NICK_KEYS[i])||sessionStorage.getItem(LOGIN_NICK_KEYS[i]); if(nv){ pj=parseJson(nv); nick=(typeof pj==='string')?pj:nv; if(nick) break; } }
-        for(i=0;i<LOGIN_PASS_KEYS.length;i()){ pv=localStorage.getItem(LOGIN_PASS_KEYS[i])||sessionStorage.getItem(LOGIN_PASS_KEYS[i]); if(pv){ pj=parseJson(pv); pass=(typeof pj==='string')?pj:pv; if(pass) break; } }
+        for(i=0;i<LOGIN_PASS_KEYS.length;i++){ pv=localStorage.getItem(LOGIN_PASS_KEYS[i])||sessionStorage.getItem(LOGIN_PASS_KEYS[i]); if(pv){ pj=parseJson(pv); pass=(typeof pj==='string')?pj:pv; if(pass) break; } }
         attemptAuth(nick?String(nick):'', pass?String(pass):'');
       }
     }
@@ -177,7 +211,7 @@
   };
   localStorage.removeItem=function(key){
     var r; try{ r=_rem(key); }catch(_){}
-    if (!isSilent(key)){
+    if (!isMuted(key)){
       if (key===KEY_PRODUCTS || isCatalogSyn(key)){ setLocalProducts([]); schedulePush('catalog'); }
       else if (key===KEY_CATS){ setLS(KEY_CATS,'[]'); schedulePush('catalog'); }
       else if (key===KEY_ORDERS || isOrdersSyn(key)){ setLS(KEY_ORDERS,'[]'); schedulePush('orders'); }
@@ -187,6 +221,7 @@
     return r;
   };
 
+  // ---- AUTH (минимум, для админа) ----
   function getUsersArray(){
     var arr=parseArr(localStorage.getItem(KEY_USERS));
     if (arr.length) return arr;
@@ -195,8 +230,10 @@
     return a;
   }
   function grantAdminSession(u){
-    var nick=uname(u)||'admin'; var ustr=JSON.stringify({ nick:nick, role:'admin', ts:now() });
-    setLS('is_admin','true'); setLS('isAdmin','true'); setLS('admin','true'); setLS('role','admin'); setLS('user_role','admin');
+    var nick=uname(u)||'admin';
+    var ustr=JSON.stringify({ nick:nick, role:'admin', ts:now() });
+    setLS('is_admin','true'); setLS('isAdmin','true'); setLS('admin','true');
+    setLS('role','admin'); setLS('user_role','admin');
     setLS('permissions', JSON.stringify(['*']));
     setLS('session_user', ustr); setLS('currentUser', ustr); setLS('profile', ustr);
   }
@@ -214,36 +251,11 @@
   }
   window.__adminLogin=function(nick,pass){ attemptAuth(String(nick||''), String(pass||'')); };
 
-  function initialPull(){
-    req('GET','/api/catalog').then(function(r){
-      var d=r.data||{};
-      var prods=Array.isArray(d&&d.products)?d.products:[];
-      var recCats=recomputeCats(prods);
-      var changed=false;
-      if (!same(parseArr(localStorage.getItem(KEY_PRODUCTS)),prods)){ setLocalProducts(prods); changed=true; }
-      if (!same(parseArr(localStorage.getItem(KEY_CATS)), recCats)){ setLS(KEY_CATS,j(recCats)); changed=true; }
-      if (changed) mirrorFromPrimary();
-    });
-    req('GET','/api/orders').then(function(r){
-      var d=r.data||{}, orders=Array.isArray(d&&d.orders)?d.orders:[];
-      if (!same(parseArr(localStorage.getItem(KEY_ORDERS)),orders)) setLS(KEY_ORDERS,j(orders));
-      mirrorFromPrimary();
-    });
-    req('GET','/api/bank').then(function(r){
-      var d=r.data||{}, log=Array.isArray(d&&d.log)?d.log:[];
-      if (!same(parseArr(localStorage.getItem(KEY_BANK)),log)) setLS(KEY_BANK,j(log));
-    });
-    req('GET','/api/users').then(function(r){
-      var d=r.data||{}, users=Array.isArray(d&&d.users)?d.users:[];
-      if (!same(parseArr(localStorage.getItem(KEY_USERS)),users)) setLS(KEY_USERS,j(users));
-      mirrorFromPrimary();
-    });
-  }
-
+  // ---- WATCHER ----
   var snapshot={};
   function snapGet(k){ return localStorage.getItem(k); }
   function saveSnap(k,v){ snapshot[k]=v; }
-  function checkKeyForChange(k, group){
+  function trackKey(k, group){
     var cur=snapGet(k);
     if (snapshot[k]!==cur){
       saveSnap(k,cur);
@@ -262,40 +274,95 @@
     for (var i=0;i<keys.length;i++) saveSnap(keys[i],snapGet(keys[i]));
   }
 
+  // ---- PULL с учётом edit-lock ----
+  function applyServerCatalog(products){
+    // Не меняем порядок, принимаем как есть
+    setLS(KEY_PRODUCTS, j(products||[]));
+    setLS(KEY_CATS, j(recomputeCats(products||[])));
+    mirrorFromPrimary();
+  }
+
+  function pullOnce(){
+    // catalog
+    req('GET','/api/catalog').then(function(r){
+      var d=r.data||{};
+      var prods=Array.isArray(d&&d.products)?d.products:[];
+      if (isEditLocked()){
+        // в режиме редактирования не перетираем локальное
+        return;
+      }
+      if (!same(parseArr(localStorage.getItem(KEY_PRODUCTS)), prods)){
+        applyServerCatalog(prods);
+      }
+    });
+    // orders
+    req('GET','/api/orders').then(function(r){
+      var d=r.data||{}, orders=Array.isArray(d&&d.orders)?d.orders:[];
+      if (!same(parseArr(localStorage.getItem(KEY_ORDERS)),orders)) setLS(KEY_ORDERS, j(orders));
+      mirrorFromPrimary();
+    });
+    // bank
+    req('GET','/api/bank').then(function(r){
+      var d=r.data||{}, log=Array.isArray(d&&d.log)?d.log:[];
+      if (!same(parseArr(localStorage.getItem(KEY_BANK)),log)) setLS(KEY_BANK, j(log));
+    });
+    // users
+    req('GET','/api/users').then(function(r){
+      var d=r.data||{}, users=Array.isArray(d&&d.users)?d.users:[];
+      if (!same(parseArr(localStorage.getItem(KEY_USERS)),users)) setLS(KEY_USERS, j(users));
+      mirrorFromPrimary();
+    });
+  }
+
   function startPolling(){
     setInterval(function(){
       var t=now(); function ok(g){ return t>=dirtyUntil[g]; }
-      req('GET','/api/catalog').then(function(r){
-        if (!ok('catalog')) return;
-        var d=r.data||{}; var prods=Array.isArray(d&&d.products)?d.products:[];
-        var recCats=recomputeCats(prods);
-        var changed=false;
-        if (!same(parseArr(localStorage.getItem(KEY_PRODUCTS)),prods)){ setLocalProducts(prods); changed=true; }
-        if (!same(parseArr(localStorage.getItem(KEY_CATS)), recCats)){ setLS(KEY_CATS,j(recCats)); changed=true; }
-        if (changed) mirrorFromPrimary();
-      });
-      req('GET','/api/orders').then(function(r){
-        if (!ok('orders')) return;
-        var d=r.data||{}; var orders=Array.isArray(d&&d.orders)?d.orders:[];
-        if (!same(parseArr(localStorage.getItem(KEY_ORDERS)),orders)) setLS(KEY_ORDERS,j(orders));
-        mirrorFromPrimary();
-      });
-      req('GET','/api/bank').then(function(r){
-        if (!ok('bank')) return;
-        var d=r.data||{}; var log=Array.isArray(d&&d.log)?d.log:[];
-        if (!same(parseArr(localStorage.getItem(KEY_BANK)),log)) setLS(KEY_BANK,j(log));
-      });
-      req('GET','/api/users').then(function(r){
-        if (!ok('users')) return;
-        var d=r.data||{}; var users=Array.isArray(d&&d.users)?d.users:[];
-        if (!same(parseArr(localStorage.getItem(KEY_USERS)),users)) setLS(KEY_USERS,j(users));
-        mirrorFromPrimary();
-      });
+      // catalog
+      if (ok('catalog')) pullOnce();
+      else {
+        // даже если dirty, всё равно поддерживаем orders/bank/users
+        req('GET','/api/orders').then(function(r){
+          var d=r.data||{}, orders=Array.isArray(d&&d.orders)?d.orders:[];
+          if (!same(parseArr(localStorage.getItem(KEY_ORDERS)),orders)) setLS(KEY_ORDERS, j(orders));
+          mirrorFromPrimary();
+        });
+        req('GET','/api/bank').then(function(r){
+          var d=r.data||{}, log=Array.isArray(d&&d.log)?d.log:[];
+          if (!same(parseArr(localStorage.getItem(KEY_BANK)),log)) setLS(KEY_BANK, j(log));
+        });
+        req('GET','/api/users').then(function(r){
+          var d=r.data||{}, users=Array.isArray(d&&d.users)?d.users:[];
+          if (!same(parseArr(localStorage.getItem(KEY_USERS)),users)) setLS(KEY_USERS, j(users));
+          mirrorFromPrimary();
+        });
+      }
     }, PULL_INTERVAL_MS);
   }
 
-  // старт
+  // ---- СТАРТ ----
+  function initialPull(){
+    pullOnce();
+  }
+  function startWatch(){
+    initSnapshot();
+    setInterval(function(){
+      trackKey(KEY_PRODUCTS,'catalog');
+      trackKey(KEY_CATS,'catalog');
+      trackKey(KEY_ORDERS,'orders');
+      trackKey(KEY_BANK,'bank');
+      trackKey(KEY_USERS,'users');
+
+      var i,list;
+      list=SYN_ORDERS_STATIC.concat(keysByPrefix('shop_orders_')); for(i=0;i<list.length;i++) trackKey(list[i],'orders');
+      list=SYN_CATALOG_STATIC.concat(keysByPrefix('shop_catalog_')); for(i=0;i<list.length;i++) trackKey(list[i],'catalog');
+      list=SYN_USERS_STATIC.concat(keysByPrefix('shop_users_')).concat(keysByPrefix('users_')).concat(keysByPrefix('accounts_')); for(i=0;i<list.length;i++) trackKey(list[i],'users');
+
+      for(i=0;i<LOGIN_NICK_KEYS.length;i++) trackKey(LOGIN_NICK_KEYS[i],null);
+      for(i=0;i<LOGIN_PASS_KEYS.length;i++) trackKey(LOGIN_PASS_KEYS[i],null);
+    }, WATCH_INTERVAL_MS);
+  }
+
   initialPull();
-  initSnapshot();
+  startWatch();
   startPolling();
 })();
