@@ -1,5 +1,5 @@
 [
-  { "id": 1, "title": "Ararat T-Shirt", "price": 9900, "cat": "clothes" },
-  { "id": 2, "title": "Pomegranate Magnet", "price": 1900, "cat": "souvenirs" },
-  { "id": 3, "title": "Copper Coffee Pot", "price": 5900, "cat": "kitchen" }
+  { "id": 1, "title": "Demo T-Shirt", "price": 1990 },
+  { "id": 2, "title": "Demo Hoodie",  "price": 3990 },
+  { "id": 3, "title": "Demo Cap",    "price":  990 }
 ]
