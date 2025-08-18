@@ -1,16 +1,24 @@
 /* ES5-мост синхронизации localStorage ↔ /api
+ * Не нужно указывать порт — мост сам найдёт работающий сервер.
+ * Порядок поиска базы:
+ *   1) window.SYNC_BASE_URL (если задан)
+ *   2) текущее origin (если http/https)
+ *   3) http://localhost:7070
+ *   4) http://127.0.0.1:7070
+ *
  * Подключать ПЕРЕД вашим app.js:
  * <script src="sync-bridge.js"></script>
  * <script src="app.js"></script>
  *
- * Требования:
- * - ТРИГГЕРЫ PUT только по 4 ключам: shop_catalog, shop_cats, shop_orders, mock_bank
- * - Синонимы/зеркала пишутся тихо (без пуша)
- * - Периодический "лёгкий pull" каждые ~5 сек
+ * Триггеры PUT только по 4 ключам:
+ *   shop_catalog, shop_cats, shop_orders, mock_bank
+ * Синонимы/зеркала пишутся тихо (без сетевых запросов).
+ * Периодический pull ~ каждые 5 сек.
  */
 (function () {
   'use strict';
 
+  /* ====== Константы ключей ====== */
   var KEY_PRODUCTS = 'shop_catalog';
   var KEY_CATS     = 'shop_cats';
   var KEY_ORDERS   = 'shop_orders';
@@ -22,18 +30,16 @@
   WATCH[KEY_ORDERS]   = true;
   WATCH[KEY_BANK]     = true;
 
-  var PUT_DEBOUNCE_MS   = 300;
-  var PULL_INTERVAL_MS  = 5000;
+  var PUT_DEBOUNCE_MS  = 300;
+  var PULL_INTERVAL_MS = 5000;
+  var BASE = null; // выбранная база для запросов, например "http://localhost:7070"
 
-  // Ссылки на оригинальные методы
-  var _setItem   = localStorage.setItem.bind(localStorage);
-  var _removeItem= localStorage.removeItem.bind(localStorage);
-  var _getItem   = localStorage.getItem.bind(localStorage);
+  /* ====== Утилиты ====== */
+  var _setItem    = localStorage.setItem.bind(localStorage);
+  var _removeItem = localStorage.removeItem.bind(localStorage);
+  var _getItem    = localStorage.getItem.bind(localStorage);
 
-  // Внутренние "тихие" записи (не должны вызывать сетевые PUT)
-  function setLS_silent(key, jsonString) {
-    try { _setItem(key, jsonString); } catch (e) {}
-  }
+  function setLS_silent(key, jsonString) { try { _setItem(key, jsonString); } catch (e) {} }
 
   function safeParse(s) {
     if (!s) return [];
@@ -44,19 +50,78 @@
     return [];
   }
 
-  function getArray(key) {
-    return safeParse(_getItem(key));
-  }
+  function getArray(key) { return safeParse(_getItem(key)); }
 
   function arraysEqual(a, b) {
     try { return JSON.stringify(a) === JSON.stringify(b); } catch (e) { return false; }
   }
 
-  function httpGet(url) {
+  function withTimeout(promise, ms) {
+    return new Promise(function (resolve, reject) {
+      var t = setTimeout(function () { reject(new Error('timeout')); }, ms);
+      promise.then(function (v) { clearTimeout(t); resolve(v); }, function (e) { clearTimeout(t); reject(e); });
+    });
+  }
+
+  function tryFetchJson(url) {
+    return withTimeout(fetch(url, { method: 'GET', cache: 'no-store' }), 2500)
+      .then(function (r) { return r.json(); });
+  }
+
+  function pickBaseUrl(doneCb) {
+    // 1) Явный оверхед (если пользователь задаст вручную)
+    var cands = [];
+    if (typeof window !== 'undefined' && window.SYNC_BASE_URL) cands.push(String(window.SYNC_BASE_URL).replace(/\/+$/,''));
+
+    // 2) Текущее origin (если http/https)
+    try {
+      if (location && /^https?:$/.test(location.protocol)) {
+        cands.push(location.origin.replace(/\/+$/,''));
+      }
+    } catch (e) {}
+
+    // 3) Известные локальные серверы
+    cands.push('http://localhost:7070');
+    cands.push('http://127.0.0.1:7070');
+
+    // Удалим дубликаты
+    var uniq = [];
+    for (var i=0;i<cands.length;i++) {
+      var v = cands[i];
+      var seen = false;
+      for (var j=0;j<uniq.length;j++) if (uniq[j] === v) { seen = true; break; }
+      if (!seen) uniq.push(v);
+    }
+
+    // Последовательно пробуем кандидатов на /api/catalog
+    function tryNext(idx) {
+      if (idx >= uniq.length) {
+        // Не нашли — работаем «вхолостую»: BASE остаётся null, сетевые запросы будут тихо падать.
+        return doneCb(null);
+      }
+      var candidate = uniq[idx];
+      tryFetchJson(candidate + '/api/catalog')
+        .then(function (j) {
+          // Проверим, что похоже на правильный ответ
+          if (j && typeof j === 'object' && 'products' in j && 'cats' in j) {
+            BASE = candidate;
+            return doneCb(BASE);
+          }
+          tryNext(idx+1);
+        }, function () { tryNext(idx+1); });
+    }
+
+    tryNext(0);
+  }
+
+  function apiGet(pathname) {
+    var url = (BASE ? BASE : '') + pathname; // если BASE null и страница file:// — запрос упадёт (поймаем)
     return fetch(url, { method: 'GET', cache: 'no-store' }).then(function (r) { return r.json(); });
   }
 
-  function httpPut(url, body) {
+  function apiPut(pathname, body) {
+    if (!BASE) return Promise.resolve(); // нет базы — тихо пропускаем
+    var url = BASE + pathname;
     return fetch(url, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -65,7 +130,7 @@
     })["catch"](function () { /* тихо */ });
   }
 
-  // Дебаунсированные пуши
+  /* ====== Дебаунсированные пуши ====== */
   var timers = { catalog: null, orders: null, bank: null };
 
   function debouncePush(which) {
@@ -79,24 +144,13 @@
   }
 
   function pushCatalog() {
-    var payload = {
-      products: getArray(KEY_PRODUCTS),
-      cats:     getArray(KEY_CATS)
-    };
-    httpPut('/api/catalog', payload);
+    var payload = { products: getArray(KEY_PRODUCTS), cats: getArray(KEY_CATS) };
+    apiPut('/api/catalog', payload);
   }
+  function pushOrders() { apiPut('/api/orders', { orders: getArray(KEY_ORDERS) }); }
+  function pushBank()   { apiPut('/api/bank',   { log:    getArray(KEY_BANK)   }); }
 
-  function pushOrders() {
-    var payload = { orders: getArray(KEY_ORDERS) };
-    httpPut('/api/orders', payload);
-  }
-
-  function pushBank() {
-    var payload = { log: getArray(KEY_BANK) };
-    httpPut('/api/bank', payload);
-  }
-
-  // ===== ЗЕРКАЛА / СИНОНИМЫ (без триггера PUT) =====
+  /* ====== Зеркала/синонимы (без сетевых запросов) ====== */
   function detectNick() {
     var cands = ['nick', 'username', 'user', 'login', 'account', 'profile_name'];
     for (var i = 0; i < cands.length; i++) {
@@ -153,11 +207,11 @@
     } catch (e) {}
   }
 
-  // Перехват только 4 фиксированных ключей
+  /* ====== Перехват только 4 ключей ====== */
   localStorage.setItem = function (key, value) {
     var r; try { r = _setItem(key, value); } catch (_) {}
     if (!WATCH[key]) {
-      // Синонимы можно просто зеркалить в первичные ключи (без пуша)
+      // Синонимы зеркалим в первичные ключи (без сетевых запросов)
       if (key === 'products' || key === 'goods' || key === 'catalog') {
         try { setLS_silent(KEY_PRODUCTS, value); } catch (e) {}
       } else if (key === 'my_orders' || /^shop_orders_.+/.test(key)) {
@@ -165,7 +219,7 @@
       }
       return r;
     }
-    // Триггеры PUT только по 4 ключам
+    // Пушим ТОЛЬКО по 4 основным ключам
     if (key === KEY_PRODUCTS || key === KEY_CATS)      debouncePush('catalog');
     else if (key === KEY_ORDERS)                       debouncePush('orders');
     else if (key === KEY_BANK)                         debouncePush('bank');
@@ -174,21 +228,18 @@
 
   localStorage.removeItem = function (key) {
     var r; try { r = _removeItem(key); } catch (_) {}
-    if (!WATCH[key]) {
-      // Удаление синонимов не трогаем
-      return r;
-    }
-    // Не подменяем удаление записью '[]' — просто синхронизируем пустые массивы на сервере
+    if (!WATCH[key]) return r;
+    // На удаление не подменяем значением '[]', просто синкаем на сервер пустые массивы
     if (key === KEY_PRODUCTS || key === KEY_CATS)      debouncePush('catalog');
     else if (key === KEY_ORDERS)                       debouncePush('orders');
     else if (key === KEY_BANK)                         debouncePush('bank');
     return r;
   };
 
-  // Начальная загрузка и периодический pull
+  /* ====== Pull ====== */
   function pullOnce() {
     // catalog
-    httpGet('/api/catalog').then(function (j) {
+    apiGet('/api/catalog').then(function (j) {
       var svProducts = (j && j.products) || [];
       var svCats     = (j && j.cats) || [];
       var curProducts = getArray(KEY_PRODUCTS);
@@ -199,7 +250,7 @@
     })["catch"](function () {});
 
     // orders
-    httpGet('/api/orders').then(function (j) {
+    apiGet('/api/orders').then(function (j) {
       var svOrders = (j && j.orders) || [];
       var curOrders = getArray(KEY_ORDERS);
       if (!arraysEqual(curOrders, svOrders)) setLS_silent(KEY_ORDERS, JSON.stringify(svOrders));
@@ -207,14 +258,23 @@
     })["catch"](function () {});
 
     // bank
-    httpGet('/api/bank').then(function (j) {
+    apiGet('/api/bank').then(function (j) {
       var svLog = (j && j.log) || [];
       var curLog = getArray(KEY_BANK);
       if (!arraysEqual(curLog, svLog)) setLS_silent(KEY_BANK, JSON.stringify(svLog));
     })["catch"](function () {});
   }
 
+  /* ====== Инициализация ====== */
   adoptFromAlternatesOnce();
-  pullOnce();
-  setInterval(pullOnce, PULL_INTERVAL_MS);
+
+  pickBaseUrl(function () {
+    // Сделаем начальный pull сразу (если база есть — с сервера; если нет — просто ничего не произойдёт)
+    pullOnce();
+    // Периодический pull
+    setInterval(pullOnce, PULL_INTERVAL_MS);
+  });
+
+  // На всякий случай позволим вручную указать базу до запуска:
+  // window.SYNC_BASE_URL = "http://localhost:7070";
 })();
