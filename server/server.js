@@ -56,6 +56,11 @@ function writeFileAtomicSync(filePath, dataString) {
 function initData() {
   ensureDir(DATA_DIR);
   var seeds = [
+{ name: 'users.json', value: [
+  { "nick": "admin", "pass": "admin123", "isAdmin": true, "createdAt": Date.now() }
+] }
+
+  	
     {
       name: 'products.json',
       value: [
@@ -184,3 +189,4 @@ app.get('*', function (req, res) {
 app.listen(PORT, function () {
   console.log('Server listening on http://localhost:' + PORT);
 });
+
