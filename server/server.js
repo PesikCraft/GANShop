@@ -1,51 +1,56 @@
 'use strict';
 
-var express = require('express');
-var fs = require('fs');
-var path = require('path');
+const express = require('express');
+const fs = require('fs');
+const path = require('path');
 
-var app = express();
-var PORT = process.env.PORT || 7070;
+const app  = express();
+const PORT = process.env.PORT || 7070;
 
-var BASE_DIR = path.join(__dirname, '..');
-var CLIENT_DIR = path.join(BASE_DIR, 'client');
-var DATA_DIR = path.join(BASE_DIR, 'data');
+const BASE_DIR   = path.join(__dirname, '..');
+const CLIENT_DIR = path.join(BASE_DIR, 'client');
+const DATA_DIR   = path.join(BASE_DIR, 'data');
 
-function ensureDir(p) {
-  if (!fs.existsSync(p)) {
-    fs.mkdirSync(p, { recursive: true });
+// Создаёт директорию, если её нет
+function ensureDir(dir) {
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
   }
 }
 
+// Чтение JSON с fallback
 function readJson(filePath, fallback) {
   try {
-    var raw = fs.readFileSync(filePath, 'utf8');
-    return JSON.parse(raw);
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
   } catch (e) {
     return fallback;
   }
 }
 
-function fsyncDirSync(dirPath) {
+// fsync на каталоге
+function fsyncDir(dirPath) {
   try {
-    var dfd = fs.openSync(dirPath, 'r');
-    try { fs.fsyncSync(dfd); } finally { fs.closeSync(dfd); }
-  } catch (e) { /* noop */ }
+    const fd = fs.openSync(dirPath, 'r');
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+  } catch (e) {
+    // noop
+  }
 }
 
-// tmp → fsync(tmp) → rename → fsync(dir)
+// Атомарная запись: tmp → fsync(tmp) → rename → fsync(parent dir)
 function writeFileAtomicSync(filePath, dataString) {
-  var dir = path.dirname(filePath);
+  const dir = path.dirname(filePath);
   ensureDir(dir);
-  var tmp = filePath + '.tmp-' + process.pid + '-' + Math.random().toString(36).slice(2);
-  var fd;
+  const tmp = filePath + '.tmp-' + process.pid + '-' + Math.random().toString(36).slice(2);
+  let fd;
   try {
     fd = fs.openSync(tmp, 'w');
     fs.writeSync(fd, dataString, 0, 'utf8');
     fs.fsyncSync(fd);
     fs.closeSync(fd);
     fs.renameSync(tmp, filePath);
-    fsyncDirSync(dir);
+    fsyncDir(dir);
   } catch (e) {
     try { if (typeof fd === 'number') fs.closeSync(fd); } catch (_) {}
     try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch (_) {}
@@ -53,14 +58,10 @@ function writeFileAtomicSync(filePath, dataString) {
   }
 }
 
+// Инициализация файлов данных
 function initData() {
   ensureDir(DATA_DIR);
-  var seeds = [
-{ name: 'users.json', value: [
-  { "nick": "admin", "pass": "admin123", "isAdmin": true, "createdAt": Date.now() }
-] }
-
-  	
+  const seeds = [
     {
       name: 'products.json',
       value: [
@@ -80,38 +81,36 @@ function initData() {
     { name: 'orders.json', value: [] },
     { name: 'bank.json',   value: [] }
   ];
-  for (var i = 0; i < seeds.length; i++) {
-    var fp = path.join(DATA_DIR, seeds[i].name);
+  seeds.forEach(function (s) {
+    const fp = path.join(DATA_DIR, s.name);
     if (!fs.existsSync(fp)) {
-      writeFileAtomicSync(fp, JSON.stringify(seeds[i].value, null, 2));
+      writeFileAtomicSync(fp, JSON.stringify(s.value, null, 2));
     }
-  }
+  });
 }
-
 initData();
 
-// Глобально отключаем кэш (и для API, и для статики)
+// Отключаем кэш для всех ответов
 app.use(function (req, res, next) {
   res.setHeader('Cache-Control', 'no-store');
   next();
 });
-
 app.use(express.json({ limit: '1mb' }));
 
-// Раздача клиентской статики
+// Раздача статики из client/
 app.use(express.static(CLIENT_DIR, {
   etag: false,
   lastModified: false,
   cacheControl: false
 }));
 
-/* ============ API ============ */
+/* ========== API ========== */
 
 // GET /api/catalog → { cats:[...], products:[...] }
 app.get('/api/catalog', function (req, res) {
   try {
-    var products = readJson(path.join(DATA_DIR, 'products.json'), []);
-    var cats = readJson(path.join(DATA_DIR, 'cats.json'), []);
+    const products = readJson(path.join(DATA_DIR, 'products.json'), []);
+    const cats     = readJson(path.join(DATA_DIR, 'cats.json'), []);
     res.json({ cats: cats, products: products });
   } catch (e) {
     res.status(500).json({ error: 'failed to read catalog' });
@@ -121,7 +120,7 @@ app.get('/api/catalog', function (req, res) {
 // PUT /api/catalog ← { cats:[...], products:[...] }
 app.put('/api/catalog', function (req, res) {
   try {
-    var body = req.body || {};
+    const body = req.body || {};
     if (!Array.isArray(body.cats) || !Array.isArray(body.products)) {
       return res.status(400).json({ error: 'cats and products must be arrays' });
     }
@@ -136,7 +135,7 @@ app.put('/api/catalog', function (req, res) {
 // GET /api/orders → { orders:[...] }
 app.get('/api/orders', function (req, res) {
   try {
-    var orders = readJson(path.join(DATA_DIR, 'orders.json'), []);
+    const orders = readJson(path.join(DATA_DIR, 'orders.json'), []);
     res.json({ orders: orders });
   } catch (e) {
     res.status(500).json({ error: 'failed to read orders' });
@@ -146,7 +145,7 @@ app.get('/api/orders', function (req, res) {
 // PUT /api/orders ← { orders:[...] }
 app.put('/api/orders', function (req, res) {
   try {
-    var body = req.body || {};
+    const body = req.body || {};
     if (!Array.isArray(body.orders)) {
       return res.status(400).json({ error: 'orders must be an array' });
     }
@@ -160,7 +159,7 @@ app.put('/api/orders', function (req, res) {
 // GET /api/bank → { log:[...] }
 app.get('/api/bank', function (req, res) {
   try {
-    var log = readJson(path.join(DATA_DIR, 'bank.json'), []);
+    const log = readJson(path.join(DATA_DIR, 'bank.json'), []);
     res.json({ log: log });
   } catch (e) {
     res.status(500).json({ error: 'failed to read bank' });
@@ -170,7 +169,7 @@ app.get('/api/bank', function (req, res) {
 // PUT /api/bank ← { log:[...] }
 app.put('/api/bank', function (req, res) {
   try {
-    var body = req.body || {};
+    const body = req.body || {};
     if (!Array.isArray(body.log)) {
       return res.status(400).json({ error: 'log must be an array' });
     }
@@ -181,7 +180,7 @@ app.put('/api/bank', function (req, res) {
   }
 });
 
-/* ======= SPA fallback (если есть client-side routing) ======= */
+/* ====== SPA fallback ====== */
 app.get('*', function (req, res) {
   res.sendFile(path.join(CLIENT_DIR, 'index.html'));
 });
@@ -189,4 +188,3 @@ app.get('*', function (req, res) {
 app.listen(PORT, function () {
   console.log('Server listening on http://localhost:' + PORT);
 });
-
