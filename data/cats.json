@@ -1,5 +1,5 @@
 [
-  { "id": "clothes", "title": "Clothes" },
-  { "id": "souvenirs", "title": "Souvenirs" },
-  { "id": "kitchen", "title": "Kitchen" }
+  { "id": 1, "title": "Apparel" },
+  { "id": 2, "title": "Hoodies" },
+  { "id": 3, "title": "Accessories" }
 ]
